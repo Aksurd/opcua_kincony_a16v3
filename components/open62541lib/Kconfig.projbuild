@@ -1,0 +1,12 @@
+# Open62541 Configuration
+config UA_LOGLEVEL
+    int "Open62541 log level"
+    range 100 600
+    default 600
+    help
+        Log level for open62541 OPC UA library.
+        100 = Debug, 200 = Info, 300 = Warning, 400 = Error, 500 = Security, 600 = Fatal
+        
+        WARNING: Level 100 (Debug) generates extensive console output
+        including every network packet and connection detail. Use only
+        for deep debugging purposes! (Config: components/open62541lib/Kconfig.projbuild)
