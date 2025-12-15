@@ -1,8 +1,8 @@
-/* ethernet_connect.c - Based on ESP-IDF examples (Apache-2.0). See project LICENSE and main file. */
-
+// ethernet_connect.c
 #include <string.h>
 #include "sdkconfig.h"
 #include "esp_event.h"
+#include "driver/spi_master.h"
 
 #if CONFIG_EXAMPLE_CONNECT_ETHERNET
 #include "esp_eth.h"
@@ -25,15 +25,6 @@ static void stop(void);
 
 /**
  * @brief Event handler for IP address acquisition
- * 
- * This function is called when the system receives an IP address
- * from DHCP or static configuration. It stores the IP address
- * and signals the connection event group.
- * 
- * @param arg User-defined argument (not used)
- * @param event_base Event base identifier
- * @param event_id Event ID (IP_EVENT_GOT_IP)
- * @param event_data Pointer to IP event data structure
  */
 static void on_got_ip(void *arg, esp_event_base_t event_base,
                       int32_t event_id, void *event_data)
@@ -46,16 +37,6 @@ static void on_got_ip(void *arg, esp_event_base_t event_base,
 
 /**
  * @brief Establish network connection (Ethernet or Wi-Fi)
- * 
- * This function initializes the network connection based on the
- * configuration in sdkconfig.h. It can connect via Ethernet or
- * Wi-Fi depending on the build configuration.
- * 
- * @return ESP_OK if connection was successfully established
- * @return ESP_ERR_INVALID_STATE if already connected
- * 
- * @note This function blocks until IP address is obtained
- * @note Automatically registers shutdown handler for cleanup
  */
 esp_err_t example_connect(void)
 {
@@ -75,12 +56,6 @@ esp_err_t example_connect(void)
 
 /**
  * @brief Disconnect from network
- * 
- * This function tears down the network connection and cleans up
- * all allocated resources.
- * 
- * @return ESP_OK if successfully disconnected
- * @return ESP_ERR_INVALID_STATE if not currently connected
  */
 esp_err_t example_disconnect(void)
 {
@@ -101,13 +76,10 @@ static esp_eth_handle_t eth_handle = NULL;
 static esp_eth_mac_t *s_mac = NULL;
 static esp_eth_phy_t *s_phy = NULL;
 static void *s_eth_glue = NULL;
+static spi_device_handle_t spi_handle = NULL;
 
 /**
- * @brief Start Ethernet connection
- * 
- * Initializes Ethernet hardware, configures network interface,
- * and starts the Ethernet driver. Supports both dynamic DHCP
- * and static IP configuration.
+ * @brief Start Ethernet connection with W5500
  */
 static void start(void)
 {
@@ -128,58 +100,86 @@ static void start(void)
     }
     ESP_ERROR_CHECK(set_dns_server(eth_netif, ipaddr_addr(CONFIG_DNS_ADDRESS), ESP_NETIF_DNS_MAIN));
 #endif
-    // Set default handlers to process TCP/IP stuffs
+
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &on_got_ip, NULL));
 
-    // Configuration using LAN8720
-    eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
-    eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
+    // W5500 SPI configuration for Kincony KC868-A16V3
+    spi_bus_config_t buscfg = {
+        .mosi_io_num = 43,    // GPIO43 - MOSI
+        .miso_io_num = 44,    // GPIO44 - MISO
+        .sclk_io_num = 42,    // GPIO42 - CLK
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4096
+    };
 
-    phy_config.phy_addr = CONFIG_EXAMPLE_ETH_PHY_ADDR;
+    spi_device_interface_config_t devcfg = {
+        .command_bits = 0,
+        .address_bits = 0,
+        .dummy_bits = 0,
+        .mode = 0,
+        .clock_speed_hz = 20 * 1000 * 1000,  // 20 MHz
+        .spics_io_num = 15,                  // GPIO15 - CS
+        .queue_size = 20,
+        .flags = 0
+    };
 
-    eth_esp32_emac_config_t esp32_emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
-    esp32_emac_config.smi_mdc_gpio_num = CONFIG_EXAMPLE_ETH_MDC_GPIO;
-    esp32_emac_config.smi_mdio_gpio_num = CONFIG_EXAMPLE_ETH_MDIO_GPIO;
-    s_mac = esp_eth_mac_new_esp32(&esp32_emac_config, &mac_config);
-    s_phy = esp_eth_phy_new_lan87xx(&phy_config);
+    // Initialize SPI bus
+    ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
+    ESP_ERROR_CHECK(spi_bus_add_device(SPI3_HOST, &devcfg, &spi_handle));
+
+    // W5500 specific configuration
+    eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(spi_handle);
+    w5500_config.phy_reset_gpio_num = 1;    // GPIO1 - RESET
+    w5500_config.int_gpio_num = 2;          // GPIO2 - INTERRUPT
+
+    // Create MAC and PHY for W5500
+    s_mac = esp_eth_mac_new_w5500(&w5500_config, &eth_mac_config);
+    s_phy = esp_eth_phy_new_w5500(&eth_phy_config);
 
     esp_eth_config_t config = ETH_DEFAULT_CONFIG(s_mac, s_phy);
     ESP_ERROR_CHECK(esp_eth_driver_install(&config, &eth_handle));
     ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
-    s_connection_name = "ETH";
+    s_connection_name = "ETH (W5500)";
 }
 
 /**
  * @brief Stop Ethernet connection
- * 
- * Stops Ethernet driver, unregisters event handlers, and cleans up
- * all allocated resources for Ethernet connection.
  */
 static void stop(void)
 {
     ESP_ERROR_CHECK(esp_event_handler_unregister(IP_EVENT, IP_EVENT_ETH_GOT_IP, &on_got_ip));
-    ESP_ERROR_CHECK(esp_eth_stop(eth_handle));
-    ESP_ERROR_CHECK(esp_eth_del_netif_glue(s_eth_glue));
-    ESP_ERROR_CHECK(esp_eth_driver_uninstall(eth_handle));
-    ESP_ERROR_CHECK(s_phy->del(s_phy));
-    ESP_ERROR_CHECK(s_mac->del(s_mac));
+    
+    if (eth_handle != NULL) {
+        ESP_ERROR_CHECK(esp_eth_stop(eth_handle));
+        ESP_ERROR_CHECK(esp_eth_del_netif_glue(s_eth_glue));
+        ESP_ERROR_CHECK(esp_eth_driver_uninstall(eth_handle));
+    }
+    
+    if (s_phy != NULL) {
+        ESP_ERROR_CHECK(s_phy->del(s_phy));
+    }
+    
+    if (s_mac != NULL) {
+        ESP_ERROR_CHECK(s_mac->del(s_mac));
+    }
+    
+    if (spi_handle != NULL) {
+        ESP_ERROR_CHECK(spi_bus_remove_device(spi_handle));
+        ESP_ERROR_CHECK(spi_bus_free(SPI3_HOST));
+    }
 
-    esp_netif_destroy(s_example_esp_netif);
-    s_example_esp_netif = NULL;
+    if (s_example_esp_netif != NULL) {
+        esp_netif_destroy(s_example_esp_netif);
+        s_example_esp_netif = NULL;
+    }
 }
 #endif // CONFIG_EXAMPLE_CONNECT_ETHERNET
 
 #ifdef CONFIG_EXAMPLE_CONNECT_WIFI
 /**
  * @brief Event handler for Wi-Fi disconnection
- * 
- * Automatically attempts to reconnect when Wi-Fi connection is lost.
- * 
- * @param arg User-defined argument (not used)
- * @param event_base Event base identifier
- * @param event_id Event ID (WIFI_EVENT_STA_DISCONNECTED)
- * @param event_data Pointer to Wi-Fi event data structure
  */
 static void on_wifi_disconnect(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
@@ -195,10 +195,6 @@ static void on_wifi_disconnect(void *arg, esp_event_base_t event_base,
 
 /**
  * @brief Start Wi-Fi connection
- * 
- * Initializes Wi-Fi station mode, configures network interface,
- * and connects to the configured Wi-Fi network. Supports both
- * dynamic DHCP and static IP configuration.
  */
 static void start(void)
 {
@@ -227,14 +223,10 @@ static void start(void)
         ESP_ERROR_CHECK(esp_netif_set_ip_info(get_example_netif(), &ipInfo));
     }
     ESP_ERROR_CHECK(set_dns_server(netif, ipaddr_addr(CONFIG_DNS_ADDRESS), ESP_NETIF_DNS_MAIN));
-#endif // CONFIG_USE_STATIC_IP
+#endif
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &on_wifi_disconnect, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_got_ip, NULL));
-#ifdef CONFIG_EXAMPLE_CONNECT_IPV6
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &on_wifi_connect, netif));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, &on_got_ipv6, NULL));
-#endif
 
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     wifi_config_t wifi_config = {
@@ -253,18 +245,12 @@ static void start(void)
 
 /**
  * @brief Stop Wi-Fi connection
- * 
- * Disconnects from Wi-Fi network, stops Wi-Fi driver, and cleans up
- * all allocated resources for Wi-Fi connection.
  */
 static void stop(void)
 {
     ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &on_wifi_disconnect));
     ESP_ERROR_CHECK(esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_got_ip));
-#ifdef CONFIG_EXAMPLE_CONNECT_IPV6
-    ESP_ERROR_CHECK(esp_event_handler_unregister(IP_EVENT, IP_EVENT_GOT_IP6, &on_got_ipv6));
-    ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &on_wifi_connect));
-#endif
+    
     esp_err_t err = esp_wifi_stop();
     if (err == ESP_ERR_WIFI_NOT_INIT)
     {
@@ -280,10 +266,6 @@ static void stop(void)
 
 /**
  * @brief Get the current network interface
- * 
- * Returns a pointer to the active network interface (Ethernet or Wi-Fi).
- * 
- * @return esp_netif_t* Pointer to the network interface, or NULL if not connected
  */
 esp_netif_t *get_example_netif(void)
 {
@@ -292,14 +274,6 @@ esp_netif_t *get_example_netif(void)
 
 /**
  * @brief Configure DNS server for network interface
- * 
- * Sets the DNS server address for the specified network interface.
- * Can be used for both primary and backup DNS servers.
- * 
- * @param netif Pointer to network interface
- * @param addr DNS server IP address in network byte order
- * @param type DNS server type (MAIN, BACKUP, FALLBACK)
- * @return ESP_OK if DNS server was configured successfully
  */
 esp_err_t set_dns_server(esp_netif_t *netif, uint32_t addr, esp_netif_dns_type_t type)
 {
