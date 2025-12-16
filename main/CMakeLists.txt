@@ -13,9 +13,9 @@ idf_component_register(SRCS "opcua_esp32.c" "config.c"
                         driver
                         freertos
                         model
-                        ethernet
-                        wifi
-                        network_manager
+                        network
+                        network
+                        network
                         open62541lib
                         spi_flash
                         bootloader_support
@@ -47,5 +47,5 @@ endif()
 include_directories(
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/components/model/include
-    ${CMAKE_CURRENT_LIST_DIR}/components/network_manager/include
+    ${CMAKE_CURRENT_LIST_DIR}/components/network/include
 )
