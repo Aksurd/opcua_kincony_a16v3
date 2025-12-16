@@ -15,22 +15,22 @@ system_config_t g_config = {
     // Wi-Fi конфигурация по умолчанию
     .wifi = {
         .enable = true,
-        .ssid = "Q",
-        .password = "Q",
+        .ssid = "Mz6",
+        .password = "123qWe123Q",
         .authmode = 3, // WIFI_AUTH_WPA2_PSK
         .max_retry = 5,
         .scan_timeout_ms = 5000,
         .channel = 0, // авто
         .priority = 200,
         .ip_config = {
-            .mode = NET_DHCP,
+            .mode = NET_STATIC,  // БЫЛО: NET_DHCP - СТАЛО: NET_STATIC
             .ip_info = {
-                .ip = { .addr = 0 },
-                .netmask = { .addr = 0 },
-                .gw = { .addr = 0 }
+		    .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 129) },   // 10.0.0.128
+		    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },  // 255.255.255.0
+		    .gw = { .addr = ESP_IP4TOADDR(10, 0, 0, 1) }      // 10.0.0.1
             },
-            .dns_primary = 0,
-            .dns_secondary = 0,
+		    .dns_primary = ESP_IP4TOADDR(10, 0, 0, 1),      // Google DNS
+		    .dns_secondary = ESP_IP4TOADDR(8, 8, 8, 8),    // Google DNS вторичный
             .hostname = "esp32-wifi"
         }
     },
@@ -56,8 +56,8 @@ system_config_t g_config = {
 		    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },  // 255.255.255.0
 		    .gw = { .addr = ESP_IP4TOADDR(10, 0, 0, 1) }      // 10.0.0.1
             },
-		    .dns_primary = ESP_IP4TOADDR(8, 8, 8, 8),      // Google DNS
-		    .dns_secondary = ESP_IP4TOADDR(8, 8, 4, 4),    // Google DNS вторичный
+		    .dns_primary = ESP_IP4TOADDR(10, 0, 0, 1),      // Google DNS
+		    .dns_secondary = ESP_IP4TOADDR(8, 8, 8, 8),    // Google DNS вторичный
             .hostname = "esp32-eth"
         }
     },
