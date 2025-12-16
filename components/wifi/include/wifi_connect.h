@@ -1,40 +1,31 @@
-#pragma once
+#ifndef WIFI_CONNECT_H
+#define WIFI_CONNECT_H
+
+#include "esp_err.h"
+#include "esp_netif.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "esp_err.h"
-#include "esp_netif.h"
-
-/**
- * @brief Establish Wi-Fi connection
- * 
- * Initializes Wi-Fi in station mode and connects to configured network.
- * Blocks until connection is established and IP address is obtained.
- * 
- * @return esp_err_t ESP_OK on success, error code on failure
- */
+// Инициализация и подключение Wi-Fi
 esp_err_t wifi_connect(void);
 
-/**
- * @brief Disconnect from Wi-Fi network
- * 
- * Gracefully disconnects from Wi-Fi and cleans up resources.
- * 
- * @return esp_err_t ESP_OK on success, error code on failure
- */
+// Отключение Wi-Fi
 esp_err_t wifi_disconnect(void);
 
-/**
- * @brief Get the Wi-Fi network interface
- * 
- * Returns pointer to the active Wi-Fi network interface.
- * 
- * @return esp_netif_t* Pointer to Wi-Fi network interface, NULL if not initialized
- */
+// Получение сетевого интерфейса Wi-Fi
 esp_netif_t *get_wifi_netif(void);
+
+// Получение статуса подключения
+bool wifi_is_connected(void);
+
+// Применение IP конфигурации к интерфейсу
+esp_err_t wifi_apply_ip_config(void);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif // WIFI_CONNECT_H

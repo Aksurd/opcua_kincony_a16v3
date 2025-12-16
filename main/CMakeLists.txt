@@ -1,17 +1,8 @@
 # Main application CMakeLists.txt
 # Note: This file should be in the main directory
 
-# List of components to include in the project
-set(EXTRA_COMPONENT_DIRS
-    components/ethernet
-    components/wifi
-    components/network_manager
-    components/model
-    components/open62541lib
-)
-
 # Main application source files
-idf_component_register(SRCS "opcua_esp32.c"
+idf_component_register(SRCS "opcua_esp32.c" "config.c"
                     INCLUDE_DIRS "."
                     REQUIRES
                         esp_netif

@@ -1,69 +1,31 @@
-// ethernet_connect.h
-#pragma once
+#ifndef ETHERNET_CONNECT_H
+#define ETHERNET_CONNECT_H
+
+#include "esp_err.h"
+#include "esp_netif.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "esp_err.h"
-#include "esp_log.h"
-#include "driver/gpio.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/event_groups.h"
-#include "lwip/err.h"
-#include "lwip/sys.h"
-#include "lwip/ip_addr.h"
-#include <lwip/sockets.h>
-#include "freertos/task.h"
-#include "driver/gpio.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
-#include "esp_netif.h"
+// Инициализация и подключение Ethernet
+esp_err_t ethernet_connect(void);
 
-#define CONFIG_ESP32_SPIRAM_SUPPORT 1
-#define CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC 1
+// Отключение Ethernet
+esp_err_t ethernet_disconnect(void);
 
-#ifdef CONFIG_EXAMPLE_CONNECT_ETHERNET
-#include "esp_eth.h"
-#include "driver/spi_master.h"
-#define CONFIG_EXAMPLE_USE_INTERNAL_ETHERNET 1
-#define CONFIG_EXAMPLE_ETH_PHY_W5500 1
-#define EXAMPLE_INTERFACE TCPIP_ADAPTER_IF_ETH
-#define BASE_IP_EVENT ETH_EVENT
-#define GOT_IP_EVENT IP_EVENT_ETH_GOT_IP
-#define DISCONNECT_EVENT ETHERNET_EVENT_DISCONNECTED
-#endif
+// Получение сетевого интерфейса Ethernet
+esp_netif_t *get_ethernet_netif(void);
 
-#ifdef CONFIG_EXAMPLE_CONNECT_WIFI
-#include "esp_wifi.h"
-#include "esp_wifi_default.h"
-#define BASE_IP_EVENT WIFI_EVENT
-#define GOT_IP_EVENT IP_EVENT_STA_GOT_IP
-#define DISCONNECT_EVENT WIFI_EVENT_STA_DISCONNECTED
-#define EXAMPLE_INTERFACE TCPIP_ADAPTER_IF_STA
-#endif
+// Получение статуса подключения
+bool ethernet_is_connected(void);
 
-/**
- * @brief Establish network connection (Ethernet or Wi-Fi)
- */
-esp_err_t example_connect(void);
-
-/**
- * @brief Disconnect from network
- */
-esp_err_t example_disconnect(void);
-
-/**
- * @brief Get the current network interface
- */
-esp_netif_t *get_example_netif(void);
-
-/**
- * @brief Configure DNS server for network interface
- */
-esp_err_t set_dns_server(esp_netif_t *netif, uint32_t addr, esp_netif_dns_type_t type);
+// Применение IP конфигурации к интерфейсу
+esp_err_t ethernet_apply_ip_config(void);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif // ETHERNET_CONNECT_H

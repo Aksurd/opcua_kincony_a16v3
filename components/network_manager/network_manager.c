@@ -1,202 +1,297 @@
 #include "network_manager.h"
+#include "config.h"
+#include "wifi_connect.h"
+#include "ethernet_connect.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <string.h>
 #include "esp_wifi.h"
-#include "esp_eth.h"
-#include "wifi_connect.h"
-#include "ethernet_connect.h"
 
 static const char *TAG = "network_manager";
 
-// Static variables for both interfaces
-static esp_netif_t *eth_netif = NULL;
-static esp_netif_t *wifi_netif = NULL;
-static bool eth_connected = false;
-static bool wifi_connected = false;
-static bool system_initialized = false;
+// Статические переменные
+static bool s_network_initialized = false;
+static network_state_callback_t s_state_callback = NULL;
+static bool s_wifi_connected = false;
+static bool s_eth_connected = false;
 
-// Event handler for IP events
-static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
-                                 int32_t event_id, void *event_data)
+// Приватные функции
+static void notify_state_change(bool connected, esp_netif_t *netif);
+
+// Обработчик событий Wi-Fi
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data)
 {
-    if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Ethernet Got IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
-        eth_connected = true;
-        // Можно добавить запуск OPC UA сервера здесь, если требуется
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        ESP_LOGI(TAG, "Wi-Fi connected to AP");
+        s_wifi_connected = true;
+        notify_state_change(true, get_wifi_netif());
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGW(TAG, "Wi-Fi disconnected from AP");
+        s_wifi_connected = false;
+        notify_state_change(false, get_wifi_netif());
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Wi-Fi Got IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
-        wifi_connected = true;
-        // Можно добавить запуск OPC UA сервера здесь, если требуется
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        
+        // Применяем конфигурацию IP если нужно
+        wifi_apply_ip_config();
+        
+        char ip_str[16];
+        config_int_to_ip(event->ip_info.ip.addr, ip_str, sizeof(ip_str));
+        ESP_LOGI(TAG, "Wi-Fi IP address: %s", ip_str);
     }
 }
 
-// Initialize network system (TCP/IP stack and event loop)
-// Вызывается ТОЛЬКО ОДИН РАЗ в начале работы
+// Обработчик событий Ethernet
+static void eth_event_handler(void* arg, esp_event_base_t event_base,
+                              int32_t event_id, void* event_data)
+{
+    if (event_base == ETH_EVENT && event_id == ETHERNET_EVENT_CONNECTED) {
+        ESP_LOGI(TAG, "Ethernet link up");
+        s_eth_connected = true;
+        notify_state_change(true, get_ethernet_netif());
+    } else if (event_base == ETH_EVENT && event_id == ETHERNET_EVENT_DISCONNECTED) {
+        ESP_LOGW(TAG, "Ethernet link down");
+        s_eth_connected = false;
+        notify_state_change(false, get_ethernet_netif());
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        
+        // Применяем конфигурацию IP если нужно
+        ethernet_apply_ip_config();
+        
+        char ip_str[16];
+        config_int_to_ip(event->ip_info.ip.addr, ip_str, sizeof(ip_str));
+        ESP_LOGI(TAG, "Ethernet IP address: %s", ip_str);
+    }
+}
+
+static void notify_state_change(bool connected, esp_netif_t *netif)
+{
+    if (s_state_callback != NULL) {
+        s_state_callback(connected, netif);
+    }
+    
+    // Логируем общий статус
+    ESP_LOGI(TAG, "=== Network Status ===");
+    ESP_LOGI(TAG, "Wi-Fi: %s", s_wifi_connected ? "CONNECTED" : "DISCONNECTED");
+    ESP_LOGI(TAG, "Ethernet: %s", s_eth_connected ? "CONNECTED" : "DISCONNECTED");
+    ESP_LOGI(TAG, "Any connection: %s", network_manager_is_any_connected() ? "YES" : "NO");
+}
+
 esp_err_t network_manager_init(void)
 {
-    if (system_initialized) {
-        ESP_LOGW(TAG, "Network system already initialized");
+    if (s_network_initialized) {
+        ESP_LOGW(TAG, "Network manager already initialized");
         return ESP_ERR_INVALID_STATE;
     }
     
-    ESP_LOGI(TAG, "Initializing network system...");
+    if (!g_config.init_complete) {
+        ESP_LOGE(TAG, "System configuration not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
     
-    // 1. Инициализация сетевого стека
+    ESP_LOGI(TAG, "Initializing network manager...");
+    ESP_LOGI(TAG, "Wi-Fi enabled: %s", g_config.wifi.enable ? "YES" : "NO");
+    ESP_LOGI(TAG, "Ethernet enabled: %s", g_config.eth.enable ? "YES" : "NO");
+    
+    // Инициализация TCP/IP стека
     esp_err_t ret = esp_netif_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to initialize netif: %s", esp_err_to_name(ret));
         return ret;
     }
     
-    // 2. Создание цикла событий
+    // Создание цикла событий
     ret = esp_event_loop_create_default();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to create event loop: %s", esp_err_to_name(ret));
         return ret;
     }
     
-    // 3. Создание Ethernet интерфейса (если сконфигурирован)
-    //    Примечание: сам драйвер Ethernet инициализируется в example_connect()
-#ifdef CONFIG_EXAMPLE_CONNECT_ETHERNET
-    esp_netif_config_t eth_cfg = ESP_NETIF_DEFAULT_ETH();
-    eth_netif = esp_netif_new(&eth_cfg);
-    if (eth_netif == NULL) {
-        ESP_LOGE(TAG, "Failed to create Ethernet network interface");
-    } else {
-        ESP_LOGI(TAG, "Ethernet network interface created");
-        // Регистрируем обработчик IP событий для Ethernet
-        ret = esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL);
+    // Регистрация обработчиков событий для Wi-Fi
+    if (g_config.wifi.enable) {
+        ret = esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,
+                                                  &wifi_event_handler, NULL, NULL);
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to register Ethernet IP handler: %s", esp_err_to_name(ret));
+            ESP_LOGW(TAG, "Failed to register Wi-Fi connected handler");
+        }
+        
+        ret = esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+                                                  &wifi_event_handler, NULL, NULL);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to register Wi-Fi disconnected handler");
+        }
+        
+        ret = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                  &wifi_event_handler, NULL, NULL);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to register Wi-Fi IP handler");
         }
     }
-#endif
     
-    // 4. Wi-Fi интерфейс НЕ создаем здесь - он будет создан в wifi_connect.c
-    //    Но регистрируем обработчик событий для Wi-Fi
-#ifdef CONFIG_EXAMPLE_CONNECT_WIFI
-    ESP_LOGI(TAG, "Wi-Fi interface will be created in wifi_connect()");
-    ret = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &got_ip_event_handler, NULL);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to register Wi-Fi IP handler: %s", esp_err_to_name(ret));
+    // Регистрация обработчиков событий для Ethernet
+    if (g_config.eth.enable) {
+        ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_CONNECTED,
+                                                  &eth_event_handler, NULL, NULL);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to register Ethernet connected handler");
+        }
+        
+        ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED,
+                                                  &eth_event_handler, NULL, NULL);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to register Ethernet disconnected handler");
+        }
+        
+        ret = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
+                                                  &eth_event_handler, NULL, NULL);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to register Ethernet IP handler");
+        }
     }
-#endif
     
-    system_initialized = true;
-    ESP_LOGI(TAG, "Network system initialized successfully");
+    // Настройка IP форвардинга если нужно
+    if (g_config.ip_forwarding) {
+        ESP_LOGI(TAG, "IP forwarding enabled (both interfaces active)");
+        // Включение форвардинга делается в lwip компоненте через menuconfig
+    }
+    
+    s_network_initialized = true;
+    ESP_LOGI(TAG, "Network manager initialized successfully");
     
     return ESP_OK;
 }
 
-// Start both network connections
 esp_err_t network_manager_start(void)
 {
-    if (!system_initialized) {
-        ESP_LOGE(TAG, "Network system not initialized. Call network_manager_init() first");
+    if (!s_network_initialized) {
+        ESP_LOGE(TAG, "Network manager not initialized");
         return ESP_ERR_INVALID_STATE;
     }
     
     esp_err_t ret = ESP_OK;
-    esp_err_t eth_ret = ESP_OK;
     esp_err_t wifi_ret = ESP_OK;
+    esp_err_t eth_ret = ESP_OK;
     
-    // Start Ethernet (if configured)
-#ifdef CONFIG_EXAMPLE_CONNECT_ETHERNET
-    if (eth_netif != NULL) {
+    ESP_LOGI(TAG, "Starting network connections...");
+    
+    // Запуск Wi-Fi если включен
+    if (g_config.wifi.enable) {
+        ESP_LOGI(TAG, "Starting Wi-Fi connection to: %s", g_config.wifi.ssid);
+        wifi_ret = wifi_connect();
+        
+        if (wifi_ret == ESP_OK) {
+            ESP_LOGI(TAG, "Wi-Fi connection initiated");
+        } else if (wifi_ret == ESP_ERR_NOT_SUPPORTED) {
+            ESP_LOGW(TAG, "Wi-Fi disabled in configuration");
+        } else {
+            ESP_LOGE(TAG, "Wi-Fi connection failed: %s", esp_err_to_name(wifi_ret));
+        }
+    }
+    
+    // Запуск Ethernet если включен
+    if (g_config.eth.enable) {
         ESP_LOGI(TAG, "Starting Ethernet connection...");
-        eth_ret = example_connect();
-        if (eth_ret != ESP_OK) {
-            ESP_LOGE(TAG, "Ethernet connection failed: %s", esp_err_to_name(eth_ret));
-        } else {
+        eth_ret = ethernet_connect();
+        
+        if (eth_ret == ESP_OK) {
             ESP_LOGI(TAG, "Ethernet connection initiated");
-        }
-    } else {
-        ESP_LOGW(TAG, "Ethernet interface not available");
-    }
-#endif
-    
-    // Start Wi-Fi (if configured)
-#ifdef CONFIG_EXAMPLE_CONNECT_WIFI
-    ESP_LOGI(TAG, "Starting Wi-Fi connection...");
-    wifi_ret = wifi_connect();
-    if (wifi_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Wi-Fi connection failed: %s", esp_err_to_name(wifi_ret));
-    } else {
-        wifi_netif = get_wifi_netif();  // Получаем интерфейс, созданный в wifi_connect.c
-        if (wifi_netif != NULL) {
-            ESP_LOGI(TAG, "Wi-Fi connection initiated and interface obtained");
+        } else if (eth_ret == ESP_ERR_NOT_SUPPORTED) {
+            ESP_LOGW(TAG, "Ethernet disabled in configuration");
         } else {
-            ESP_LOGW(TAG, "Wi-Fi connected but interface is NULL");
+            ESP_LOGE(TAG, "Ethernet connection failed: %s", esp_err_to_name(eth_ret));
         }
     }
-#endif
     
-    // Возвращаем ошибку, только если оба соединения не удались
-    if (eth_ret != ESP_OK && wifi_ret != ESP_OK) {
+    // Возвращаем ошибку только если оба не работают и должны работать
+    if (g_config.wifi.enable && g_config.eth.enable) {
+        if (wifi_ret != ESP_OK && eth_ret != ESP_OK) {
+            ret = ESP_FAIL;
+        }
+    } else if (g_config.wifi.enable && wifi_ret != ESP_OK) {
+        ret = ESP_FAIL;
+    } else if (g_config.eth.enable && eth_ret != ESP_OK) {
         ret = ESP_FAIL;
     }
+    
+    ESP_LOGI(TAG, "Network connections started");
     
     return ret;
 }
 
-// Get network interfaces
-esp_netif_t *network_manager_get_eth_netif(void)
+esp_err_t network_manager_stop(void)
 {
-    return eth_netif;
+    if (!s_network_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    ESP_LOGI(TAG, "Stopping network connections...");
+    
+    // Остановка Wi-Fi
+    if (g_config.wifi.enable) {
+        esp_err_t ret = wifi_disconnect();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Wi-Fi disconnect returned: %s", esp_err_to_name(ret));
+        }
+        s_wifi_connected = false;
+    }
+    
+    // Остановка Ethernet
+    if (g_config.eth.enable) {
+        esp_err_t ret = ethernet_disconnect();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Ethernet disconnect returned: %s", esp_err_to_name(ret));
+        }
+        s_eth_connected = false;
+    }
+    
+    ESP_LOGI(TAG, "Network connections stopped");
+    
+    return ESP_OK;
+}
+
+esp_netif_t *network_manager_get_active_netif(void)
+{
+    // Возвращаем первый подключенный интерфейс
+    // В новой архитектуре оба работают одновременно, 
+    // но для совместимости возвращаем Wi-Fi если он подключен
+    if (s_wifi_connected) {
+        return get_wifi_netif();
+    } else if (s_eth_connected) {
+        return get_ethernet_netif();
+    }
+    return NULL;
 }
 
 esp_netif_t *network_manager_get_wifi_netif(void)
 {
-    return wifi_netif;
+    return get_wifi_netif();
 }
 
-// Get connection status
-bool network_manager_eth_is_connected(void)
+esp_netif_t *network_manager_get_eth_netif(void)
 {
-    return eth_connected;
+    return get_ethernet_netif();
 }
 
 bool network_manager_wifi_is_connected(void)
 {
-    return wifi_connected;
+    return s_wifi_connected;
 }
 
-// Deinitialize network system
-esp_err_t network_manager_deinit(void)
+bool network_manager_eth_is_connected(void)
 {
-    if (!system_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    ESP_LOGI(TAG, "Deinitializing network system...");
-    
-    // Отменяем регистрацию обработчиков событий
-#ifdef CONFIG_EXAMPLE_CONNECT_ETHERNET
-    esp_event_handler_unregister(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler);
-#endif
-    
-#ifdef CONFIG_EXAMPLE_CONNECT_WIFI
-    esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &got_ip_event_handler);
-#endif
-    
-    // Уничтожаем сетевые интерфейсы
-    if (eth_netif != NULL) {
-        esp_netif_destroy(eth_netif);
-        eth_netif = NULL;
-    }
-    
-    // Wi-Fi интерфейс уничтожается в wifi_disconnect()
-    wifi_netif = NULL;
-    
-    // Сбрасываем флаги
-    eth_connected = false;
-    wifi_connected = false;
-    system_initialized = false;
-    
-    ESP_LOGI(TAG, "Network system deinitialized");
-    return ESP_OK;
+    return s_eth_connected;
+}
+
+bool network_manager_is_any_connected(void)
+{
+    return s_wifi_connected || s_eth_connected;
+}
+
+void network_manager_set_state_callback(network_state_callback_t callback)
+{
+    s_state_callback = callback;
 }

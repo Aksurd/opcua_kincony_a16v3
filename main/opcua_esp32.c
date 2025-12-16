@@ -151,6 +151,9 @@
 #include "esp_event.h" // Для ESP_EVENT_ANY_BASE и событий
 #include "esp_eth.h"   // Для констант, связанных с Ethernet
 
+/* ВАЖНОЕ ДОБАВЛЕНИЕ: Подключение конфигурационной системы */
+#include "config.h"  // <-- ДОБАВЛЕНО: Система конфигурации сети
+
 #define EXAMPLE_ESP_MAXIMUM_RETRY 10
 
 #define TAG "OPCUA_ESP32"
@@ -469,6 +472,10 @@ static void connection_scan(void)
 {
     ESP_LOGI(NET_TAG, "Initializing network manager with both Ethernet and Wi-Fi...");
     
+    /* ВАЖНОЕ ИЗМЕНЕНИЕ: Инициализация системы конфигурации ПЕРВЫМ ДЕЛОМ */
+    config_init_defaults();
+    ESP_LOGI(NET_TAG, "Configuration system initialized");
+    
     // Initialize network manager (this initializes both interfaces)
     esp_err_t nm_err = network_manager_init();
     if (nm_err != ESP_OK) {
@@ -493,8 +500,8 @@ static void connection_scan(void)
         ESP_LOGW(NET_TAG, "Failed to register Wi-Fi IP handler: %s", esp_err_to_name(handler_err));
     }
     
-    // Also register disconnect handlers for both interfaces
-    handler_err = esp_event_handler_register(ESP_EVENT_ANY_BASE, ESP_EVENT_ANY_ID, &disconnect_handler, NULL);
+    // Также регистрируем обработчики отключения
+    handler_err = esp_event_handler_register(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED, &disconnect_handler, NULL);
     if (handler_err != ESP_OK) {
         ESP_LOGW(NET_TAG, "Failed to register Ethernet disconnect handler: %s", esp_err_to_name(handler_err));
     }
@@ -518,7 +525,7 @@ void app_main(void)
     ++boot_count;
     ESP_LOGI(TAG, "Boot count: %d", boot_count);
     
-    /* INITIALIZE CACHE AND POLLING TASK */
+    /* INITIALIZE CACHE AND POLLING TASK - БЕЗ ИЗМЕНЕНИЙ */
     ESP_LOGI(TAG, "Initializing IO cache system...");
     io_cache_init();
     adc_init();
@@ -544,5 +551,6 @@ void app_main(void)
         ESP_LOGI(TAG, "NVS initialized");
     }
     
+    /* ВАЖНО: Оставляем без изменений - запуск сети как раньше */
     connection_scan();
 }
