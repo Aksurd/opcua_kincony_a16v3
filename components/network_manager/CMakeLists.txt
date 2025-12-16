@@ -1,0 +1,4 @@
+idf_component_register(SRCS "network_manager.c"
+                    INCLUDE_DIRS "include"
+                    REQUIRES esp_netif esp_wifi esp_eth
+                    PRIV_REQUIRES wifi ethernet)

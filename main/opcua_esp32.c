@@ -141,18 +141,22 @@
 #include "opcua_esp32.h"
 #include "model.h"
 #include "io_cache.h"
+#include "network_manager.h"
 #include "esp_task_wdt.h"          /* Watchdog timer functions */
 #include "esp_sntp.h"              /* SNTP time synchronization */
 #include "nvs_flash.h"             /* Non-volatile storage */
 #include "esp_err.h"               /* ESP error codes */
 #include "esp_flash.h"             /* Flash encryption functions */
 #include "esp_flash_encrypt.h"     /* Flash encryption utilities */
+#include "esp_event.h" // Для ESP_EVENT_ANY_BASE и событий
+#include "esp_eth.h"   // Для констант, связанных с Ethernet
 
 #define EXAMPLE_ESP_MAXIMUM_RETRY 10
 
 #define TAG "OPCUA_ESP32"
 #define SNTP_TAG "SNTP"
 #define WDT_TAG "WATCHDOG"
+#define NET_TAG "NETWORK"
 
 static bool obtain_time(void);
 static void initialize_sntp(void);
@@ -463,30 +467,50 @@ static void disconnect_handler(void *arg, esp_event_base_t event_base,
 
 static void connection_scan(void)
 {
-    ESP_LOGI(TAG, "Initializing network...");
+    ESP_LOGI(NET_TAG, "Initializing network manager with both Ethernet and Wi-Fi...");
     
-    esp_err_t netif_err = esp_netif_init();
-    if (netif_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to init netif: %s", esp_err_to_name(netif_err));
+    // Initialize network manager (this initializes both interfaces)
+    esp_err_t nm_err = network_manager_init();
+    if (nm_err != ESP_OK) {
+        ESP_LOGE(NET_TAG, "Failed to initialize network manager: %s", esp_err_to_name(nm_err));
+        return;
     }
     
-    esp_err_t event_err = esp_event_loop_create_default();
-    if (event_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create event loop: %s", esp_err_to_name(event_err));
+    // Start both network connections (Ethernet and Wi-Fi)
+    nm_err = network_manager_start();
+    if (nm_err != ESP_OK) {
+        ESP_LOGW(NET_TAG, "Some network connections failed, continuing...");
     }
     
-    esp_err_t handler_err = esp_event_handler_register(IP_EVENT, GOT_IP_EVENT, &opc_event_handler, NULL);
+    // Register event handlers for both interfaces
+    esp_err_t handler_err = esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &opc_event_handler, NULL);
     if (handler_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register IP event handler: %s", esp_err_to_name(handler_err));
+        ESP_LOGW(NET_TAG, "Failed to register Ethernet IP handler: %s", esp_err_to_name(handler_err));
     }
     
-    handler_err = esp_event_handler_register(BASE_IP_EVENT, DISCONNECT_EVENT, &disconnect_handler, NULL);
+    handler_err = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &opc_event_handler, NULL);
     if (handler_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register disconnect handler: %s", esp_err_to_name(handler_err));
+        ESP_LOGW(NET_TAG, "Failed to register Wi-Fi IP handler: %s", esp_err_to_name(handler_err));
     }
     
-    ESP_LOGI(TAG, "Connecting to network...");
-    example_connect();
+    // Also register disconnect handlers for both interfaces
+    handler_err = esp_event_handler_register(ESP_EVENT_ANY_BASE, ESP_EVENT_ANY_ID, &disconnect_handler, NULL);
+    if (handler_err != ESP_OK) {
+        ESP_LOGW(NET_TAG, "Failed to register Ethernet disconnect handler: %s", esp_err_to_name(handler_err));
+    }
+    
+    handler_err = esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &disconnect_handler, NULL);
+    if (handler_err != ESP_OK) {
+        ESP_LOGW(NET_TAG, "Failed to register Wi-Fi disconnect handler: %s", esp_err_to_name(handler_err));
+    }
+    
+    // Log connection status
+    ESP_LOGI(NET_TAG, "Network initialization complete");
+    ESP_LOGI(NET_TAG, "Ethernet interface: %s", network_manager_get_eth_netif() ? "available" : "not available");
+    ESP_LOGI(NET_TAG, "Wi-Fi interface: %s", network_manager_get_wifi_netif() ? "available" : "not available");
+    
+    // Note: We don't wait here - connections will be established asynchronously
+    // OPC UA server will be started when the first IP address is obtained
 }
 
 void app_main(void)

@@ -1,13 +1,21 @@
-# The following five lines of boilerplate have to be in your project's
-# CMakeLists in this exact order for cmake to work correctly
-cmake_minimum_required(VERSION 3.5)
+# CMake build configuration for OPC UA ESP32-S3 Server
+# See project LICENSE file for licensing information.
 
+# Minimum required CMake version
+cmake_minimum_required(VERSION 3.16)
 
+# Project name and version
+set(PROJECT_NAME "opcua-kincony-a16v3")
+set(PROJECT_VERSION "0.0.1")
 
-set(CMAKE_C_COMPILER "/home/user5/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc")
-set(CMAKE_CXX_COMPILER "/home/user5/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32s3-elf-g++")
-set(CMAKE_ASM_COMPILER "/home/user5/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc")
+# Include ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-set(EXTRA_COMPONENTS_DIRS "components/open62541lib" "components/ethernet" "components/model")
 
-project(opcua_esp32)
+# Set project name and version - ЭТО ДОЛЖНО БЫТЬ ПЕРЕД project()
+set(PROJECT_NAME "opcua-kincony-a16v3")
+set(PROJECT_VERSION "0.0.1")
+
+# THIS LINE IS CRITICAL - must be exactly like this
+project(${PROJECT_NAME} VERSION ${PROJECT_VERSION})
+
+# NO other commands between project() and idf_component_register()
