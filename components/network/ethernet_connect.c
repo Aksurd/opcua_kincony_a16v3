@@ -11,6 +11,7 @@
 #include "esp_eth_mac_w5500.h"
 #include "esp_eth_phy_w5500.h"
 #include "driver/spi_master.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -69,13 +70,21 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 break;
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "Ethernet Got IP via DHCP:" IPSTR, IP2STR(&event->ip_info.ip));
-        
-        // Применяем IP конфигурацию если нужно
-        ethernet_apply_ip_config();
-        
-        xEventGroupSetBits(s_eth_event_group, ETHERNET_CONNECTED_BIT);
+        // ВАЖНО: Проверяем режим (DHCP или Static)
+        if (g_config.eth.ip_config.mode == NET_DHCP) {
+            // Только для DHCP обрабатываем событие получения IP
+            ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+            ESP_LOGI(TAG, "Ethernet Got IP via DHCP:" IPSTR, IP2STR(&event->ip_info.ip));
+            
+            // Применяем IP конфигурацию если нужно
+            ethernet_apply_ip_config();
+            
+            xEventGroupSetBits(s_eth_event_group, ETHERNET_CONNECTED_BIT);
+        } else {
+            // Для статики - IP уже установлен, игнорируем DHCP событие
+            ESP_LOGI(TAG, "Ethernet static IP already configured, ignoring DHCP event");
+            // Для статики флаг CONNECTED_BIT уже установлен в apply_ip_configuration()
+        }
     }
 }
 
@@ -134,6 +143,18 @@ esp_err_t ethernet_apply_ip_config(void)
                 ESP_LOGW(TAG, "Failed to set secondary DNS: %s", esp_err_to_name(ret));
             }
         }
+        
+        // Устанавливаем hostname если указан
+        if (strlen(g_config.eth.ip_config.hostname) > 0) {
+            esp_netif_set_hostname(s_eth_netif, g_config.eth.ip_config.hostname);
+            ESP_LOGI(TAG, "Ethernet hostname set: %s", g_config.eth.ip_config.hostname);
+        }
+        
+        // Для статики устанавливаем флаг подключения СРАЗУ
+        if (s_eth_event_group != NULL) {
+            xEventGroupSetBits(s_eth_event_group, ETHERNET_CONNECTED_BIT);
+        }
+        
     } else {
         ESP_LOGI(TAG, "Using DHCP for Ethernet");
         // Запускаем DHCP клиент если не запущен
@@ -141,12 +162,12 @@ esp_err_t ethernet_apply_ip_config(void)
         if (ret != ESP_OK && ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
             ESP_LOGW(TAG, "Failed to start DHCP client: %s", esp_err_to_name(ret));
         }
-    }
-    
-    // Устанавливаем hostname если указан
-    if (strlen(g_config.eth.ip_config.hostname) > 0) {
-        esp_netif_set_hostname(s_eth_netif, g_config.eth.ip_config.hostname);
-        ESP_LOGI(TAG, "Ethernet hostname set: %s", g_config.eth.ip_config.hostname);
+        
+        // Устанавливаем hostname если указан
+        if (strlen(g_config.eth.ip_config.hostname) > 0) {
+            esp_netif_set_hostname(s_eth_netif, g_config.eth.ip_config.hostname);
+            ESP_LOGI(TAG, "Ethernet hostname set: %s", g_config.eth.ip_config.hostname);
+        }
     }
     
     return ESP_OK;
@@ -180,6 +201,41 @@ esp_err_t ethernet_connect(void)
              g_config.eth.mosi_pin, g_config.eth.miso_pin,
              g_config.eth.sclk_pin, g_config.eth.cs_pin,
              g_config.eth.reset_pin, g_config.eth.interrupt_pin);
+    
+    /* ========== КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ ========== */
+    
+    /* Шаг 0: Инициализация сервиса прерываний GPIO (ВАЖНО!) */
+    ret = gpio_install_isr_service(0); // 0 = флаги по умолчанию
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        // ESP_ERR_INVALID_STATE означает, что сервис уже установлен - это нормально
+        ESP_LOGE(TAG, "Failed to install GPIO ISR service: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "GPIO ISR service initialized");
+    
+    /* Шаг 1: Аппаратный сброс W5500 (требуется для стабильной работы) */
+    if (g_config.eth.reset_pin >= 0) {
+        ESP_LOGI(TAG, "Performing W5500 hardware reset on GPIO %d", g_config.eth.reset_pin);
+        
+        // Настраиваем пин сброса как выход
+        ret = gpio_set_direction(g_config.eth.reset_pin, GPIO_MODE_OUTPUT);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set reset pin direction: %s", esp_err_to_name(ret));
+        }
+        
+        // Активный низкий уровень для сброса (удерживаем 10 мс)
+        gpio_set_level(g_config.eth.reset_pin, 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        
+        // Отпускаем сброс (переводим в высокий уровень)
+        gpio_set_level(g_config.eth.reset_pin, 1);
+        
+        // Даем время W5500 на запуск (минимум 500 мс)
+        vTaskDelay(pdMS_TO_TICKS(500));
+        ESP_LOGI(TAG, "W5500 hardware reset complete");
+    }
+    
+    /* ========== КОНЕЦ ИСПРАВЛЕНИЙ ========== */
     
     /* Step 1: Create event group */
     s_eth_event_group = xEventGroupCreate();
@@ -246,9 +302,16 @@ esp_err_t ethernet_connect(void)
         goto cleanup_spi;
     }
     
-    /* Step 6: Конфигурация W5500 - исправленная версия для ESP-IDF v5.5.1 */
-    eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(g_config.eth.host, &devcfg);
-    w5500_config.int_gpio_num = g_config.eth.interrupt_pin;
+/* Step 6: Конфигурация W5500 - исправленная версия для ESP-IDF v5.5.1 */
+eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(g_config.eth.host, &devcfg);
+w5500_config.int_gpio_num = g_config.eth.interrupt_pin;
+
+// УДАЛИТЬ ВСЁ ЭТО:
+// uint8_t eth_mac[6] = {0x02, 0x00, 0x00, 0x12, 0x34, 0x56}; // Локально администрируемый MAC
+// w5500_config.mac_addr = eth_mac;
+// ESP_LOGI(TAG, "W5500 MAC address: %02x:%02x:%02x:%02x:%02x:%02x",
+//          eth_mac[0], eth_mac[1], eth_mac[2], 
+//          eth_mac[3], eth_mac[4], eth_mac[5]);
     
     // Если используем режим опроса (interrupt_pin = -1)
     if (g_config.eth.interrupt_pin < 0) {
@@ -257,7 +320,9 @@ esp_err_t ethernet_connect(void)
     
     /* Step 7: Configure MAC */
     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
-    mac_config.sw_reset_timeout_ms = 1000;
+    mac_config.sw_reset_timeout_ms = 2000;
+    mac_config.rx_task_stack_size = 4096;  // Увеличить стек
+    mac_config.rx_task_prio = 20;          // Приоритет задачи
     
     /* Step 8: Configure PHY */
     eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();

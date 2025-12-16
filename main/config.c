@@ -15,8 +15,8 @@ system_config_t g_config = {
     // Wi-Fi конфигурация по умолчанию
     .wifi = {
         .enable = true,
-        .ssid = "OPCUATaskForce",
-        .password = "12345678",
+        .ssid = "Q",
+        .password = "Q",
         .authmode = 3, // WIFI_AUTH_WPA2_PSK
         .max_retry = 5,
         .scan_timeout_ms = 5000,
@@ -37,27 +37,27 @@ system_config_t g_config = {
     
     // Ethernet конфигурация по умолчанию
     .eth = {
-        .enable = true,
-        .mosi_pin = 43,
-        .miso_pin = 44,
-        .sclk_pin = 42,
-        .cs_pin = 15,
-        .reset_pin = 1,
-        .interrupt_pin = 2,
-        .clock_speed_hz = 20000000, // 20 MHz
-        .host = SPI3_HOST,
-        .duplex = ETH_DUPLEX_FULL,
-        .speed = ETH_SPEED_100M,
-        .priority = 100,
+	    .enable = true,
+	    .mosi_pin = 43,
+	    .miso_pin = 44,
+	    .sclk_pin = 42,
+	    .cs_pin = 15,
+	    .reset_pin = 1,
+	    .interrupt_pin = 2,
+	    .clock_speed_hz = 36000000, // 20 MHz
+	    .host = SPI2_HOST,  // ИЗМЕНИТЬ С SPI3_HOST на SPI2_HOST (для ESP32-S3)
+	    .duplex = ETH_DUPLEX_FULL,
+	    .speed = ETH_SPEED_100M,
+	    .priority = 100,
         .ip_config = {
-            .mode = NET_DHCP,
+            .mode = NET_STATIC,  // БЫЛО: NET_DHCP - СТАЛО: NET_STATIC
             .ip_info = {
-                .ip = { .addr = 0 },
-                .netmask = { .addr = 0 },
-                .gw = { .addr = 0 }
+		    .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 128) },   // 10.0.0.128
+		    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },  // 255.255.255.0
+		    .gw = { .addr = ESP_IP4TOADDR(10, 0, 0, 1) }      // 10.0.0.1
             },
-            .dns_primary = 0,
-            .dns_secondary = 0,
+		    .dns_primary = ESP_IP4TOADDR(8, 8, 8, 8),      // Google DNS
+		    .dns_secondary = ESP_IP4TOADDR(8, 8, 4, 4),    // Google DNS вторичный
             .hostname = "esp32-eth"
         }
     },
