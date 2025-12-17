@@ -37,7 +37,7 @@ system_config_t g_config = {
     
     // Ethernet конфигурация по умолчанию
     .eth = {
-	    .enable = true,
+	    .enable = false,
 	    .mosi_pin = 43,
 	    .miso_pin = 44,
 	    .sclk_pin = 42,
@@ -49,16 +49,16 @@ system_config_t g_config = {
 	    .duplex = ETH_DUPLEX_FULL,
 	    .speed = ETH_SPEED_100M,
 	    .priority = 100,
-        .ip_config = {
+	    .ip_config = {
             .mode = NET_STATIC,  // БЫЛО: NET_DHCP - СТАЛО: NET_STATIC
-            .ip_info = {
-		    .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 128) },   // 10.0.0.128
-		    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },  // 255.255.255.0
-		    .gw = { .addr = ESP_IP4TOADDR(10, 0, 0, 1) }      // 10.0.0.1
-            },
-		    .dns_primary = ESP_IP4TOADDR(10, 0, 0, 1),      // Google DNS
-		    .dns_secondary = ESP_IP4TOADDR(8, 8, 8, 8),    // Google DNS вторичный
-            .hostname = "esp32-eth"
+		    .ip_info = {
+			    .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 128) },   // 10.0.0.128
+			    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },  // 255.255.255.0
+			    .gw = { .addr = ESP_IP4TOADDR(10, 0, 0, 1) }      // 10.0.0.1
+		    },
+			    .dns_primary = ESP_IP4TOADDR(10, 0, 0, 1),      // Google DNS
+			    .dns_secondary = ESP_IP4TOADDR(8, 8, 8, 8),    // Google DNS вторичный
+            	.hostname = "esp32-eth"
         }
     },
     

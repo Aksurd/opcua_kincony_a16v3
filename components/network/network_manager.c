@@ -143,26 +143,45 @@ esp_err_t network_manager_init(void)
     
     ESP_LOGW(TAG, "initializing");
     
-    s_wifi_event_group = xEventGroupCreate();
-    s_eth_event_group = xEventGroupCreate();
-    if (s_wifi_event_group == NULL || s_eth_event_group == NULL) {
-        ESP_LOGE(TAG, "failed to create event groups");
-        return ESP_FAIL;
+    // СОЗДАЕМ event groups только если адаптер включен
+    if (g_config.wifi.enable) {
+        s_wifi_event_group = xEventGroupCreate();
+        if (s_wifi_event_group == NULL) {
+            ESP_LOGE(TAG, "failed to create Wi-Fi event group");
+            return ESP_FAIL;
+        }
+    }
+    
+    if (g_config.eth.enable) {
+        s_eth_event_group = xEventGroupCreate();
+        if (s_eth_event_group == NULL) {
+            ESP_LOGE(TAG, "failed to create Ethernet event group");
+            // Удаляем Wi-Fi event group если он был создан
+            if (s_wifi_event_group != NULL) {
+                vEventGroupDelete(s_wifi_event_group);
+                s_wifi_event_group = NULL;
+            }
+            return ESP_FAIL;
+        }
     }
     
     esp_err_t ret = esp_netif_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "netif init failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto cleanup;
     }
     
     ret = esp_event_loop_create_default();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "event loop failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto cleanup;
     }
     
+    // РЕГИСТРИРУЕМ ОБРАБОТЧИКИ ТОЛЬКО ДЛЯ ВКЛЮЧЕННЫХ АДАПТЕРОВ
+    
     if (g_config.wifi.enable) {
+        ESP_LOGI(TAG, "Registering Wi-Fi event handlers");
+        
         const struct {
             esp_event_base_t event_base;
             int32_t event_id;
@@ -177,10 +196,20 @@ esp_err_t network_manager_init(void)
             ret = esp_event_handler_instance_register(wifi_handlers[i].event_base,
                                                      wifi_handlers[i].event_id,
                                                      &wifi_event_handler, NULL, NULL);
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to register Wi-Fi handler %d: %s", 
+                         i, esp_err_to_name(ret));
+            }
         }
+        ESP_LOGI(TAG, "Wi-Fi handlers registered");
+    } else {
+        ESP_LOGW(TAG, "Wi-Fi disabled in config, skipping handlers");
     }
     
+    // ВАЖНО: Если Ethernet отключен в конфиге - НЕ регистрируем его обработчики!
     if (g_config.eth.enable) {
+        ESP_LOGI(TAG, "Registering Ethernet event handlers");
+        
         const struct {
             esp_event_base_t event_base;
             int32_t event_id;
@@ -194,13 +223,37 @@ esp_err_t network_manager_init(void)
             ret = esp_event_handler_instance_register(eth_handlers[i].event_base,
                                                      eth_handlers[i].event_id,
                                                      &eth_event_handler, NULL, NULL);
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to register Ethernet handler %d: %s", 
+                         i, esp_err_to_name(ret));
+            }
         }
+        ESP_LOGI(TAG, "Ethernet handlers registered");
+    } else {
+        ESP_LOGW(TAG, "Ethernet disabled in config, skipping handlers");
     }
     
     s_network_initialized = true;
     ESP_LOGW(TAG, "initialized");
     
+    // Логируем конфигурацию для отладки
+    ESP_LOGI(TAG, "Network configuration: Wi-Fi=%s, Ethernet=%s",
+             g_config.wifi.enable ? "ENABLED" : "DISABLED",
+             g_config.eth.enable ? "ENABLED" : "DISABLED");
+    
     return ESP_OK;
+
+cleanup:
+    // Очищаем event groups при ошибке
+    if (s_wifi_event_group != NULL) {
+        vEventGroupDelete(s_wifi_event_group);
+        s_wifi_event_group = NULL;
+    }
+    if (s_eth_event_group != NULL) {
+        vEventGroupDelete(s_eth_event_group);
+        s_eth_event_group = NULL;
+    }
+    return ret;
 }
 
 esp_err_t network_manager_start(void)
@@ -215,25 +268,46 @@ esp_err_t network_manager_start(void)
     esp_err_t wifi_ret = ESP_OK;
     esp_err_t eth_ret = ESP_OK;
     
+    // ЗАПУСКАЕМ ТОЛЬКО ВКЛЮЧЕННЫЕ АДАПТЕРЫ
     if (g_config.wifi.enable) {
+        ESP_LOGI(TAG, "Starting Wi-Fi connection");
         wifi_ret = wifi_connect();
+        if (wifi_ret != ESP_OK) {
+            ESP_LOGE(TAG, "Wi-Fi failed: %s", esp_err_to_name(wifi_ret));
+        }
     }
     
     if (g_config.eth.enable) {
+        ESP_LOGI(TAG, "Starting Ethernet connection");
         eth_ret = ethernet_connect();
+        if (eth_ret != ESP_OK) {
+            ESP_LOGE(TAG, "ETH failed: %s", esp_err_to_name(eth_ret));
+        }
     }
     
+    // ПРОВЕРЯЕМ РЕЗУЛЬТАТЫ ТОЛЬКО ДЛЯ ВКЛЮЧЕННЫХ АДАПТЕРОВ
     if (g_config.wifi.enable && g_config.eth.enable) {
+        // Оба включены (хотя в вашем случае такого не должно быть)
         if (wifi_ret != ESP_OK && eth_ret != ESP_OK) {
             ESP_LOGE(TAG, "both connections failed");
             return ESP_FAIL;
         }
-    } else if (g_config.wifi.enable && wifi_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Wi-Fi failed");
-        return ESP_FAIL;
-    } else if (g_config.eth.enable && eth_ret != ESP_OK) {
-        ESP_LOGE(TAG, "ETH failed");
-        return ESP_FAIL;
+    } else if (g_config.wifi.enable) {
+        // Только Wi-Fi включен
+        if (wifi_ret != ESP_OK) {
+            ESP_LOGE(TAG, "Wi-Fi failed");
+            return ESP_FAIL;
+        }
+    } else if (g_config.eth.enable) {
+        // Только Ethernet включен
+        if (eth_ret != ESP_OK) {
+            ESP_LOGE(TAG, "ETH failed");
+            return ESP_FAIL;
+        }
+    } else {
+        // Ни один адаптер не включен
+        ESP_LOGW(TAG, "No adapters enabled in config");
+        return ESP_ERR_NOT_SUPPORTED;
     }
     
     ESP_LOGW(TAG, "connections started");
@@ -248,6 +322,7 @@ esp_err_t network_manager_stop(void)
     
     ESP_LOGW(TAG, "stopping connections");
     
+    // ОСТАНАВЛИВАЕМ ТОЛЬКО ВКЛЮЧЕННЫЕ АДАПТЕРЫ
     if (g_config.wifi.enable) {
         wifi_disconnect();
         s_wifi_connected = false;
@@ -258,6 +333,7 @@ esp_err_t network_manager_stop(void)
         s_eth_connected = false;
     }
     
+    // УДАЛЯЕМ ТОЛЬКО СОЗДАННЫЕ EVENT GROUPS
     if (s_wifi_event_group != NULL) {
         vEventGroupDelete(s_wifi_event_group);
         s_wifi_event_group = NULL;
