@@ -14,7 +14,7 @@ system_config_t g_config = {
     
     // Wi-Fi конфигурация по умолчанию
     .wifi = {
-        .enable = false,
+        .enable = true,
         .ssid = "Mz6",
         .password = "123qWe123Q",
         .authmode = 3, // WIFI_AUTH_WPA2_PSK
@@ -37,7 +37,7 @@ system_config_t g_config = {
     
     // Ethernet конфигурация по умолчанию
     .eth = {
-	    .enable = true,
+	    .enable = false,
 	    .mosi_pin = 43,
 	    .miso_pin = 44,
 	    .sclk_pin = 42,

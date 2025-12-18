@@ -40,6 +40,10 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         switch (event_id) {
             case ETHERNET_EVENT_CONNECTED:
                 ESP_LOGW(TAG, "link up");
+                if (g_config.eth.ip_config.mode == NET_STATIC) {
+                    ESP_LOGW(TAG, "Applying static IP after link up");
+                    ethernet_apply_ip_config();
+                }
                 break;
                 
             case ETHERNET_EVENT_DISCONNECTED:
@@ -56,13 +60,15 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 break;
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        
+        ESP_LOGW(TAG, "Ethernet got IP:" IPSTR, IP2STR(&event->ip_info.ip));
+        
         if (g_config.eth.ip_config.mode == NET_DHCP) {
-            ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-            ESP_LOGW(TAG, "DHCP IP:" IPSTR, IP2STR(&event->ip_info.ip));
-            ethernet_apply_ip_config();
+            ESP_LOGW(TAG, "Using DHCP IP");
             xEventGroupSetBits(s_eth_event_group, ETHERNET_CONNECTED_BIT);
         } else {
-            ESP_LOGW(TAG, "static IP configured");
+            ESP_LOGW(TAG, "Static IP already configured");
         }
     }
 }
@@ -74,6 +80,9 @@ esp_err_t ethernet_apply_ip_config(void)
         return ESP_ERR_INVALID_STATE;
     }
     
+    ESP_LOGW(TAG, "Applying Ethernet IP configuration, mode: %s",
+             g_config.eth.ip_config.mode == NET_STATIC ? "STATIC" : "DHCP");
+    
     if (g_config.eth.ip_config.mode == NET_STATIC) {
         ESP_LOGW(TAG, "applying static IP");
         
@@ -81,6 +90,8 @@ esp_err_t ethernet_apply_ip_config(void)
         if (ret != ESP_OK && ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
             ESP_LOGW(TAG, "failed to stop DHCP: %s", esp_err_to_name(ret));
         }
+        
+        vTaskDelay(pdMS_TO_TICKS(100));
         
         ret = esp_netif_set_ip_info(s_eth_netif, &g_config.eth.ip_config.ip_info);
         if (ret != ESP_OK) {
@@ -113,6 +124,7 @@ esp_err_t ethernet_apply_ip_config(void)
         }
         
         if (s_eth_event_group != NULL) {
+            ESP_LOGW(TAG, "Static IP configured, setting connected bit");
             xEventGroupSetBits(s_eth_event_group, ETHERNET_CONNECTED_BIT);
         }
         
@@ -128,6 +140,7 @@ esp_err_t ethernet_apply_ip_config(void)
         }
     }
     
+    ESP_LOGW(TAG, "Ethernet IP configuration applied successfully");
     return ESP_OK;
 }
 
@@ -150,7 +163,7 @@ esp_err_t ethernet_connect(void)
         return ESP_ERR_INVALID_STATE;
     }
     
-    ESP_LOGW(TAG, "initializing W5500");
+    ESP_LOGW(TAG, "Ethernet initializing W5500");
     
     ret = gpio_install_isr_service(0);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
@@ -285,7 +298,7 @@ esp_err_t ethernet_connect(void)
     }
     
     s_eth_initialized = true;
-    ESP_LOGW(TAG, "initialization complete");
+    ESP_LOGW(TAG, "Ethernet initialization complete");
     
     EventBits_t bits = xEventGroupWaitBits(s_eth_event_group,
             ETHERNET_CONNECTED_BIT | ETHERNET_FAIL_BIT,
@@ -294,13 +307,13 @@ esp_err_t ethernet_connect(void)
             pdMS_TO_TICKS(ETHERNET_CONNECT_TIMEOUT_MS));
     
     if (bits & ETHERNET_CONNECTED_BIT) {
-        ESP_LOGW(TAG, "connected successfully");
+        ESP_LOGW(TAG, "Ethernet connected successfully");
         return ESP_OK;
     } else if (bits & ETHERNET_FAIL_BIT) {
-        ESP_LOGE(TAG, "connection failed (link down)");
+        ESP_LOGE(TAG, "Ethernet connection failed (link down)");
         ret = ESP_FAIL;
     } else {
-        ESP_LOGE(TAG, "connection timeout");
+        ESP_LOGE(TAG, "Ethernet connection timeout");
         ret = ESP_ERR_TIMEOUT;
     }
     
@@ -375,7 +388,9 @@ esp_err_t ethernet_disconnect(void)
         return ESP_ERR_INVALID_STATE;
     }
     
-    ESP_LOGW(TAG, "disconnecting...");
+    ESP_LOGW(TAG, "Ethernet disconnecting...");
+    
+    ethernet_unregister_event_handlers();
     
     if (s_eth_handle != NULL) {
         esp_eth_stop(s_eth_handle);
@@ -404,8 +419,6 @@ esp_err_t ethernet_disconnect(void)
         spi_bus_free(g_config.eth.host);
     }
     
-    ethernet_unregister_event_handlers();
-    
     if (s_eth_netif != NULL) {
         esp_netif_destroy(s_eth_netif);
         s_eth_netif = NULL;
@@ -417,7 +430,7 @@ esp_err_t ethernet_disconnect(void)
     }
     
     s_eth_initialized = false;
-    ESP_LOGW(TAG, "disconnected");
+    ESP_LOGW(TAG, "Ethernet disconnected");
     
     return ESP_OK;
 }

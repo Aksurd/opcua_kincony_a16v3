@@ -1,3 +1,5 @@
+// opcua_esp32.c
+
 /*
  * ============================================================================
  * OPC UA ESP32-S3 Server - Kincony A16V3 Industrial Controller
@@ -25,11 +27,13 @@
 #define WDT_TAG "WATCHDOG"
 #define NET_TAG "NETWORK"
 
-// ПЕРЕНЕСЕНО ВПЕРЕД: Объявление функций
+// Объявление функций
 static void opcua_task(void *arg);
 static bool obtain_time(void);
 static void initialize_sntp(void);
 static void opc_network_state_callback(bool connected, esp_netif_t *netif);
+static void start_opcua_fallback(void *arg);
+static void check_and_start_opcua(void);
 
 UA_ServerConfig *config;
 static UA_Boolean esp_sntp_initialized = false;
@@ -38,22 +42,93 @@ static UA_Boolean isServerCreated = false;
 RTC_DATA_ATTR static int boot_count = 0;
 static struct tm timeinfo;
 static time_t now = 0;
+static bool network_initialized = false;
 
-// Функция callback теперь объявлена раньше использования
+// Флаг для принудительного запуска OPC UA через таймер
+static bool fallback_triggered = false;
+
+// Callback для состояния сети
 static void opc_network_state_callback(bool connected, esp_netif_t *netif) {
-    if (connected && !isServerCreated) {
-        ESP_LOGI(TAG, "Network connected, starting OPC UA server...");
+    ESP_LOGI(TAG, "Network state callback called: connected=%d, netif=%p", connected, netif);
+    
+    if (connected) {
+        ESP_LOGI(TAG, "Network is now connected!");
+        network_initialized = true;
         
-        BaseType_t task_created = xTaskCreatePinnedToCore(opcua_task, "opcua_task", 
-                                                          24336, NULL, 5, NULL, 0);
+        // Даем сети немного времени на стабилизацию
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        
+        check_and_start_opcua();
+    } else {
+        ESP_LOGW(TAG, "Network disconnected");
+        network_initialized = false;
+        running = false;
+    }
+}
+
+// Fallback: запуск OPC UA через 10 секунд, даже если callback не сработал
+static void start_opcua_fallback(void *arg) {
+    ESP_LOGW(TAG, "Fallback timer started - waiting 10 seconds for network...");
+    
+    // Ждем 10 секунд
+    vTaskDelay(pdMS_TO_TICKS(10000));
+    
+    if (!isServerCreated && !fallback_triggered) {
+        fallback_triggered = true;
+        ESP_LOGW(TAG, "Fallback: forcing OPC UA server start...");
+        check_and_start_opcua();
+    }
+    
+    vTaskDelete(NULL);
+}
+
+// Функция проверки и запуска OPC UA
+static void check_and_start_opcua(void) {
+    if (isServerCreated) {
+        ESP_LOGI(TAG, "OPC UA server already created");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Attempting to start OPC UA server...");
+    
+    // Проверяем, есть ли активный сетевой интерфейс
+    esp_netif_t *active_netif = network_manager_get_active_netif();
+    if (active_netif == NULL) {
+        ESP_LOGW(TAG, "No active network interface yet, checking alternatives...");
+        active_netif = network_manager_get_eth_netif();
+        if (active_netif == NULL) {
+            active_netif = network_manager_get_wifi_netif();
+        }
+    }
+    
+    if (active_netif == NULL) {
+        ESP_LOGW(TAG, "Still no network interface, will try again later");
+        return;
+    }
+    
+    // Получаем IP информацию для диагностики
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(active_netif, &ip_info) == ESP_OK) {
+        ESP_LOGI(TAG, "Active interface IP: " IPSTR, IP2STR(&ip_info.ip));
+    }
+    
+    // Запускаем OPC UA сервер
+    BaseType_t task_created = xTaskCreatePinnedToCore(opcua_task, "opcua_task", 
+                                                      24336, NULL, 5, NULL, 0);
+    if (task_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create OPC UA task!");
+        // Попробуем еще раз с меньшим стеком
+        task_created = xTaskCreatePinnedToCore(opcua_task, "opcua_task", 
+                                               16384, NULL, 5, NULL, 0);
         if (task_created != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create OPC UA task!");
+            ESP_LOGE(TAG, "Failed to create OPC UA task even with smaller stack!");
         } else {
             isServerCreated = true;
+            ESP_LOGI(TAG, "OPC UA task created with smaller stack");
         }
-    } else if (!connected) {
-        ESP_LOGW(TAG, "Network disconnected");
-        running = false;
+    } else {
+        isServerCreated = true;
+        ESP_LOGI(TAG, "OPC UA task created successfully");
     }
 }
 
@@ -86,6 +161,8 @@ UA_ServerConfig_setUriName(UA_ServerConfig *uaServerConfig, const char *uri, con
 
 static void opcua_task(void *arg)
 {
+    ESP_LOGI(TAG, "OPC UA Server task starting on core %d", xPortGetCoreID());
+    
     // BufferSize's got to be decreased due to latest refactorings in open62541 v1.2rc.
     UA_Int32 sendBufferSize = 16384;
     UA_Int32 recvBufferSize = 16384;
@@ -97,14 +174,19 @@ static void opcua_task(void *arg)
         ESP_LOGI(WDT_TAG, "Task added to watchdog");
     }
 
-    ESP_LOGI(TAG, "OPC UA Server starting");
+    ESP_LOGI(TAG, "Creating OPC UA server...");
     
     UA_Server *server = UA_Server_new();
     if (server == NULL) {
         ESP_LOGE(TAG, "Failed to create OPC UA server!");
+        
+        // Попробуем освободить память и создать снова
+        esp_restart(); // Простой способ в случае неудачи
         vTaskDelete(NULL);
         return;
     }
+    
+    ESP_LOGI(TAG, "OPC UA server created, configuring...");
     
     UA_ServerConfig *config = UA_Server_getConfig(server);
     UA_ServerConfig_setMinimalCustomBuffer(config, 4840, 0, sendBufferSize, recvBufferSize);
@@ -114,6 +196,8 @@ static void opcua_task(void *arg)
     
     UA_ServerConfig_setUriName(config, appUri, "OPC_UA_Server_ESP32");
     UA_ServerConfig_setCustomHostname(config, hostName);
+
+    ESP_LOGI(TAG, "Server configured, adding variables...");
 
     // Define Node IDs for all variables
     UA_NodeId parentNodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
@@ -142,6 +226,8 @@ static void opcua_task(void *arg)
                                         counterDataSource, NULL, NULL);
     if (add_status != UA_STATUSCODE_GOOD) {
         ESP_LOGE(TAG, "Failed to add diagnostic counter: 0x%08X", add_status);
+    } else {
+        ESP_LOGI(TAG, "Diagnostic counter added");
     }
 
     // 2. Loopback Input
@@ -164,6 +250,8 @@ static void opcua_task(void *arg)
                                         loopbackInDataSource, NULL, NULL);
     if (add_status != UA_STATUSCODE_GOOD) {
         ESP_LOGE(TAG, "Failed to add loopback input: 0x%08X", add_status);
+    } else {
+        ESP_LOGI(TAG, "Loopback input added");
     }
 
     // 3. Loopback Output
@@ -186,13 +274,18 @@ static void opcua_task(void *arg)
                                         loopbackOutDataSource, NULL, NULL);
     if (add_status != UA_STATUSCODE_GOOD) {
         ESP_LOGE(TAG, "Failed to add loopback output: 0x%08X", add_status);
+    } else {
+        ESP_LOGI(TAG, "Loopback output added");
     }
 
     /* Add Information Model Objects Here */
+    ESP_LOGI(TAG, "Adding discrete I/O variables...");
     addDiscreteIOVariables(server);
+    
+    ESP_LOGI(TAG, "Adding ADC variables...");
     addAdcVariables(server);
     
-    ESP_LOGI(TAG, "OPC UA server initialized");
+    ESP_LOGI(TAG, "All variables added, starting server...");
     
     UA_StatusCode retval = UA_Server_run_startup(server);
     if (retval != UA_STATUSCODE_GOOD)
@@ -204,10 +297,24 @@ static void opcua_task(void *arg)
         return;
     }
     
-    ESP_LOGI(TAG, "OPC UA server running");
+    ESP_LOGI(TAG, "OPC UA server running on port 4840");
+    ESP_LOGI(TAG, "Server URI: opc.tcp://[IP]:4840");
+    
+    // Получаем и выводим IP адрес для удобства
+    esp_netif_t *netif = network_manager_get_active_netif();
+    if (netif) {
+        esp_netif_ip_info_t ip_info;
+        if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+            char ip_str[16];
+            snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
+            ESP_LOGI(TAG, "Connect using: opc.tcp://%s:4840", ip_str);
+        }
+    }
     
     uint32_t watchdog_reset_errors = 0;
     const uint32_t max_watchdog_errors = 10;
+    
+    running = true;
     
     while (running)
     {
@@ -241,6 +348,8 @@ static void opcua_task(void *arg)
         ESP_LOGE(WDT_TAG, "Failed to delete task from WDT: %s", esp_err_to_name(delete_err));
     }
     
+    isServerCreated = false;
+    ESP_LOGI(TAG, "OPC UA task finished");
     vTaskDelete(NULL);
 }
 
@@ -326,6 +435,11 @@ static void connection_scan(void)
     
     // Устанавливаем callback для уведомления о состоянии сети
     network_manager_set_state_callback(opc_network_state_callback);
+    ESP_LOGI(NET_TAG, "Network callback registered");
+    
+    // Запускаем fallback таймер (на всякий случай)
+    xTaskCreate(start_opcua_fallback, "fallback_timer", 2048, NULL, 2, NULL);
+    ESP_LOGI(NET_TAG, "Fallback timer started (10 seconds)");
     
     // Start both network connections
     nm_err = network_manager_start();
@@ -336,12 +450,22 @@ static void connection_scan(void)
     ESP_LOGI(NET_TAG, "Network initialization complete");
     ESP_LOGI(NET_TAG, "Ethernet interface: %s", network_manager_get_eth_netif() ? "available" : "not available");
     ESP_LOGI(NET_TAG, "Wi-Fi interface: %s", network_manager_get_wifi_netif() ? "available" : "not available");
+    ESP_LOGI(NET_TAG, "Any connected: %s", network_manager_is_any_connected() ? "YES" : "NO");
 }
 
 void app_main(void)
 {
     ++boot_count;
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "OPC UA ESP32-S3 Server v1.0");
     ESP_LOGI(TAG, "Boot count: %d", boot_count);
+    ESP_LOGI(TAG, "========================================");
+    
+    // Включаем подробные логи
+    esp_log_level_set("OPCUA_ESP32", ESP_LOG_VERBOSE);
+    esp_log_level_set("net", ESP_LOG_VERBOSE);
+    esp_log_level_set("eth", ESP_LOG_INFO);
+    esp_log_level_set("wifi", ESP_LOG_INFO);
     
     ESP_LOGI(TAG, "Initializing IO cache system...");
     io_cache_init();
@@ -368,5 +492,8 @@ void app_main(void)
         ESP_LOGI(TAG, "NVS initialized");
     }
     
+    ESP_LOGI(TAG, "Starting network scan...");
     connection_scan();
+    
+    ESP_LOGI(TAG, "app_main() completed, system is running...");
 }
