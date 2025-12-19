@@ -11,6 +11,12 @@
 static const char *TAG = "model";
 
 /* ============================================================================
+ * I2C GLOBAL MUTEX FOR BUS PROTECTION
+ * ============================================================================ */
+
+static SemaphoreHandle_t i2c_mutex = NULL;
+
+/* ============================================================================
  * DISCRETE I/O FUNCTIONS
  * ============================================================================ */
 
@@ -30,16 +36,27 @@ void discrete_io_init(void) {
         return;
     }
     
+    ESP_LOGI(TAG, "Initializing discrete I/O with I2C mutex...");
+    
+    // Create I2C mutex for bus protection
+    i2c_mutex = xSemaphoreCreateMutex();
+    if (i2c_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create I2C mutex");
+        return;
+    }
+    
     // I2C configuration
     pcf8574_config_t i2c_config = {
         .i2c_port = I2C_NUM_0,
         .sda_pin = 9,
         .scl_pin = 10,
-        .clk_speed = 400000
+        .clk_speed = 400000  // 400kHz
     };
     
     if (!pcf8574_i2c_init(&i2c_config)) {
         ESP_LOGE(TAG, "Failed to initialize I2C for discrete I/O");
+        vSemaphoreDelete(i2c_mutex);
+        i2c_mutex = NULL;
         return;
     }
     
@@ -49,12 +66,19 @@ void discrete_io_init(void) {
     pcf8574_init(&dio_out1, DIO_OUT1_ADDR, I2C_NUM_0);
     pcf8574_init(&dio_out2, DIO_OUT2_ADDR, I2C_NUM_0);
     
-    // Initialize outputs to safe state (all off)
-    pcf8574_write(&dio_out1, 0xFF); // All bits = 1 (off)
-    pcf8574_write(&dio_out2, 0xFF);
+    // Initialize outputs to safe state (all off) with mutex protection
+    if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        pcf8574_write(&dio_out1, 0xFF); // All bits = 1 (off)
+        pcf8574_write(&dio_out2, 0xFF);
+        xSemaphoreGive(i2c_mutex);
+        
+        ESP_LOGI(TAG, "Outputs set to safe state");
+    } else {
+        ESP_LOGE(TAG, "Failed to set initial outputs");
+    }
     
     dio_initialized = true;
-    ESP_LOGI(TAG, "Discrete I/O initialized");
+    ESP_LOGI(TAG, "Discrete I/O initialized with I2C mutex protection");
 }
 
 /**
@@ -76,15 +100,25 @@ uint16_t read_discrete_inputs_slow(void) {
         }
     }
     
-    uint8_t in1 = pcf8574_read(&dio_in1);
-    uint8_t in2 = pcf8574_read(&dio_in2);
+    uint16_t inputs = 0xFFFF;
     
-    // Invert: PCF8574: 0=signal present, 1=no signal -> make 1=signal present
-    in1 = ~in1;
-    in2 = ~in2;
+    // Protect I2C bus with mutex
+    if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        uint8_t in1 = pcf8574_read(&dio_in1);
+        uint8_t in2 = pcf8574_read(&dio_in2);
+        
+        // Invert: PCF8574: 0=signal present, 1=no signal -> make 1=signal present
+        in1 = ~in1;
+        in2 = ~in2;
+        
+        inputs = ((uint16_t)in2 << 8) | in1;
+        
+        xSemaphoreGive(i2c_mutex);
+        ESP_LOGD(TAG, "Direct read inputs: 0x%04X (I2C mutex protected)", inputs);
+    } else {
+        ESP_LOGE(TAG, "Failed to acquire I2C mutex for read (timeout)");
+    }
     
-    uint16_t inputs = ((uint16_t)in2 << 8) | in1;
-    ESP_LOGD(TAG, "Direct read inputs: 0x%04X", inputs);
     return inputs;
 }
 
@@ -114,10 +148,36 @@ void write_discrete_outputs_slow(uint16_t outputs) {
     out1 = ~out1;
     out2 = ~out2;
     
-    pcf8574_write(&dio_out1, out1);
-    pcf8574_write(&dio_out2, out2);
-    
-    ESP_LOGD(TAG, "Direct write outputs: 0x%04X", outputs);
+    // Protect I2C bus with mutex and add retry logic
+    if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        bool success1 = false;
+        bool success2 = false;
+        
+        // Retry logic for I2C writes (3 attempts)
+        for (int retry = 0; retry < 3; retry++) {
+            if (!success1) success1 = pcf8574_write(&dio_out1, out1);
+            if (!success2) success2 = pcf8574_write(&dio_out2, out2);
+            
+            if (success1 && success2) {
+                break;  // Both successful
+            }
+            
+            if (retry < 2) {
+                vTaskDelay(pdMS_TO_TICKS(5));  // Small delay between retries
+                ESP_LOGW(TAG, "I2C write retry %d/3", retry + 1);
+            }
+        }
+        
+        xSemaphoreGive(i2c_mutex);
+        
+        if (success1 && success2) {
+            ESP_LOGD(TAG, "Direct write outputs: 0x%04X (I2C mutex protected)", outputs);
+        } else {
+            ESP_LOGE(TAG, "I2C write failed after retries: relay1=%d, relay2=%d", success1, success2);
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to acquire I2C mutex for write (timeout)");
+    }
 }
 
 /* ============================================================================
@@ -226,7 +286,7 @@ writeDiscreteOutputs(UA_Server *server,
         data->value.type == &UA_TYPES[UA_TYPES_UINT16]) {
         UA_UInt16 outputs = *(UA_UInt16*)data->value.data;
         
-        // 1. Update physical device (slow)
+        // 1. Update physical device (slow, with I2C mutex protection)
         write_discrete_outputs_slow((uint16_t)outputs);
         
         // 2. Update cache with current timestamp
@@ -305,7 +365,7 @@ addDiscreteIOVariables(UA_Server *server) {
  * discrete I/O. It should be called during system startup.
  */
 void model_init_task(void) {
-    // Initialize discrete I/O
+    // Initialize discrete I/O (creates I2C mutex)
     discrete_io_init();
     
     ESP_LOGI(TAG, "Model initialized with Discrete I/O");

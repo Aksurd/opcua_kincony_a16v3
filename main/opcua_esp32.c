@@ -470,7 +470,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing IO cache system...");
     io_cache_init();
     adc_init();
-    io_polling_task_start();
+    // io_polling_task_start(); // ← ЗАКОММЕНТИРОВАТЬ ЭТУ СТРОЧКУ!
     vTaskDelay(pdMS_TO_TICKS(100));
     
     // Workaround for CVE-2019-15894
