@@ -86,7 +86,7 @@ static void *w5500_spi_init(const void *spi_config)
     if (w5500_config->spi_devcfg->command_bits == 0 && w5500_config->spi_devcfg->address_bits == 0) {
         /* configure default SPI frame format */
         spi_devcfg.command_bits = 16; // Actually it's the address phase in W5500 SPI frame
-        spi_devcfg.address_bits = 8;  // Actually it's the control phase in W5500 SPI frame
+        spi_devcfg.address_bits = 8;  // Actually it's the command phase in W5500 SPI frame
     } else {
         ESP_GOTO_ON_FALSE(w5500_config->spi_devcfg->command_bits == 16 && w5500_config->spi_devcfg->address_bits == 8,
                           NULL, err, TAG, "incorrect SPI frame format (command_bits/address_bits)");
@@ -339,9 +339,23 @@ static esp_err_t w5500_setup_default(emac_w5500_t *emac)
     /* Disable interrupt for all sockets by default */
     reg_value = 0;
     ESP_GOTO_ON_ERROR(w5500_write(emac, W5500_REG_SIMR, &reg_value, sizeof(reg_value)), err, TAG, "write SIMR failed");
-    /* Enable MAC RAW mode for SOCK0, enable MAC filter, no blocking broadcast and block multicast */
-    reg_value = W5500_SMR_MAC_RAW | W5500_SMR_MAC_FILTER | W5500_SMR_MAC_BLOCK_MCAST;
+    
+    /* +++ DHCP FIX: Включаем промискуозный режим для отладки +++ */
+    ESP_LOGI(TAG, "!!! DHCP DEBUG: Enabling PROMISCUOUS mode !!!");
+    /* Enable MAC RAW mode for SOCK0, DISABLE MAC filter, allow broadcast - ПРОМИСКУОЗНЫЙ РЕЖИМ */
+    reg_value = W5500_SMR_MAC_RAW | W5500_SMR_BCASTB;  // Убрали W5500_SMR_MAC_FILTER
     ESP_GOTO_ON_ERROR(w5500_write(emac, W5500_REG_SOCK_MR(0), &reg_value, sizeof(reg_value)), err, TAG, "write SMR failed");
+    
+    /* +++ Проверяем что записалось +++ */
+    uint8_t smr_readback;
+    if (w5500_read(emac, W5500_REG_SOCK_MR(0), &smr_readback, sizeof(smr_readback)) == ESP_OK) {
+        ESP_LOGI(TAG, "SOCK0 MR после записи = 0x%02X", smr_readback);
+        ESP_LOGI(TAG, "  BCASTB bit (6) = %d", (smr_readback & W5500_SMR_BCASTB) ? 1 : 0);
+        ESP_LOGI(TAG, "  MAC_FILTER bit (7) = %d", (smr_readback & W5500_SMR_MAC_FILTER) ? 1 : 0);
+        ESP_LOGI(TAG, "  ПРОМИСКУОЗНЫЙ РЕЖИМ: %s", (smr_readback & W5500_SMR_MAC_FILTER) ? "ВЫКЛ" : "ВКЛ");
+    }
+    /* +++ КОНЕЦ DHCP FIX +++ */
+
     /* Enable receive event for SOCK0 */
     reg_value = W5500_SIR_RECV;
     ESP_GOTO_ON_ERROR(w5500_write(emac, W5500_REG_SOCK_IMR(0), &reg_value, sizeof(reg_value)), err, TAG, "write SOCK0 IMR failed");
@@ -360,6 +374,14 @@ static esp_err_t emac_w5500_start(esp_eth_mac_t *mac)
     uint8_t reg_value = 0;
     /* open SOCK0 */
     ESP_GOTO_ON_ERROR(w5500_send_command(emac, W5500_SCR_OPEN, 100), err, TAG, "issue OPEN command failed");
+    
+    /* +++ DHCP FIX: Перезаписываем регистр после OPEN +++ */
+    ESP_LOGI(TAG, "!!! DHCP DEBUG: Re-writing SOCK0 MR after OPEN !!!");
+    reg_value = W5500_SMR_MAC_RAW | W5500_SMR_BCASTB;  // Промискуозный режим
+    ESP_GOTO_ON_ERROR(w5500_write(emac, W5500_REG_SOCK_MR(0), &reg_value, sizeof(reg_value)), 
+                     err, TAG, "re-write SMR failed after OPEN");
+    /* +++ КОНЕЦ DHCP FIX +++ */
+    
     /* enable interrupt for SOCK0 */
     reg_value = W5500_SIMR_SOCK0;
     ESP_GOTO_ON_ERROR(w5500_write(emac, W5500_REG_SIMR, &reg_value, sizeof(reg_value)), err, TAG, "write SIMR failed");
@@ -449,6 +471,7 @@ static esp_err_t emac_w5500_set_block_ip4_mcast(esp_eth_mac_t *mac, bool block)
     emac_w5500_t *emac = __containerof(mac, emac_w5500_t, parent);
     uint8_t smr;
     ESP_GOTO_ON_ERROR(w5500_read(emac, W5500_REG_SOCK_MR(0), &smr, sizeof(smr)), err, TAG, "read SMR failed");
+    
     if (block) {
         smr |= W5500_SMR_MAC_BLOCK_MCAST;
     } else {
@@ -463,16 +486,31 @@ static esp_err_t emac_w5500_add_mac_filter(esp_eth_mac_t *mac, uint8_t *addr)
 {
     esp_err_t ret = ESP_OK;
     emac_w5500_t *emac = __containerof(mac, emac_w5500_t, parent);
+    
+    ESP_LOGI(TAG, "=== MAC FILTER ADD ===");
+    ESP_LOGI(TAG, "MAC: %02x:%02x:%02x:%02x:%02x:%02x", 
+             addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+    
+    // Special handling for broadcast (DHCP needs this!)
+    if (addr[0] == 0xFF && addr[1] == 0xFF && addr[2] == 0xFF && 
+        addr[3] == 0xFF && addr[4] == 0xFF && addr[5] == 0xFF) {
+        ESP_LOGI(TAG, "Broadcast address added - REQUIRED FOR DHCP!");
+        // Для broadcast не нужно ничего делать специально в W5500
+        return ESP_OK;
+    }
+    
     // W5500 doesn't have specific MAC filter, so we just un-block multicast. W5500 filters out all multicast packets
     // except for IP multicast. However, behavior is not consistent. IPv4 multicast can be blocked, but IPv6 is always
     // accepted (this is not documented behavior, but it's observed on the real hardware).
     if (addr[0] == 0x01 && addr[1] == 0x00 && addr[2] == 0x5e) {
         ESP_GOTO_ON_ERROR(emac_w5500_set_block_ip4_mcast(mac, false), err, TAG, "set block multicast failed");
         emac->mcast_cnt++;
+        ESP_LOGI(TAG, "IPv4 multicast filter added");
     } else if (addr[0] == 0x33 && addr[1] == 0x33) {
         ESP_LOGW(TAG, "IPv6 multicast is always filtered in by W5500.");
     } else {
-        ESP_LOGE(TAG, "W5500 filters in IP multicast frames only!");
+        ESP_LOGW(TAG, "Unsupported MAC filter request");
+        ESP_LOGW(TAG, "W5500 only supports IP multicast filtering");
         ret = ESP_ERR_NOT_SUPPORTED;
     }
 err:
@@ -504,6 +542,14 @@ static esp_err_t emac_w5500_set_link(esp_eth_mac_t *mac, eth_link_t link)
     switch (link) {
     case ETH_LINK_UP:
         ESP_LOGD(TAG, "link is up");
+        
+        /* +++ DHCP FIX: Перезаписываем регистр при поднятии линка +++ */
+        ESP_LOGI(TAG, "!!! DHCP DEBUG: Re-writing SOCK0 MR after link up !!!");
+        uint8_t smr_value = W5500_SMR_MAC_RAW | W5500_SMR_BCASTB;  // Промискуозный режим
+        ESP_GOTO_ON_ERROR(w5500_write(emac, W5500_REG_SOCK_MR(0), &smr_value, sizeof(smr_value)), 
+                         err, TAG, "re-write SMR failed after link up");
+        /* +++ КОНЕЦ DHCP FIX +++ */
+        
         ESP_GOTO_ON_ERROR(mac->start(mac), err, TAG, "w5500 start failed");
         if (emac->poll_timer) {
             ESP_GOTO_ON_ERROR(esp_timer_start_periodic(emac->poll_timer, emac->poll_period_ms * 1000),
@@ -574,10 +620,13 @@ static esp_err_t emac_w5500_set_promiscuous(esp_eth_mac_t *mac, bool enable)
     emac_w5500_t *emac = __containerof(mac, emac_w5500_t, parent);
     uint8_t smr = 0;
     ESP_GOTO_ON_ERROR(w5500_read(emac, W5500_REG_SOCK_MR(0), &smr, sizeof(smr)), err, TAG, "read SMR failed");
+    
     if (enable) {
         smr &= ~W5500_SMR_MAC_FILTER;
+        ESP_LOGI(TAG, "Promiscuous mode ENABLED - will receive all packets");
     } else {
         smr |= W5500_SMR_MAC_FILTER;
+        ESP_LOGI(TAG, "Promiscuous mode DISABLED - MAC filtering active");
     }
     ESP_GOTO_ON_ERROR(w5500_write(emac, W5500_REG_SOCK_MR(0), &smr, sizeof(smr)), err, TAG, "write SMR failed");
 
@@ -588,12 +637,13 @@ err:
 static esp_err_t emac_w5500_set_all_multicast(esp_eth_mac_t *mac, bool enable)
 {
     emac_w5500_t *emac = __containerof(mac, emac_w5500_t, parent);
+    ESP_LOGI(TAG, "!!! set_all_multicast called: enable=%d !!!", enable);
     ESP_RETURN_ON_ERROR(emac_w5500_set_block_ip4_mcast(mac, !enable), TAG, "set block multicast failed");
     emac->mcast_cnt = 0;
     if (enable) {
-        ESP_LOGW(TAG, "W5500 filters in IP multicast frames only!");
+        ESP_LOGI(TAG, "All multicast enabled");
     } else {
-        ESP_LOGW(TAG, "W5500 always filters in IPv6 multicast frames!");
+        ESP_LOGI(TAG, "Multicast filtering enabled");
     }
     return ESP_OK;
 }
@@ -810,40 +860,106 @@ static void emac_w5500_task(void *arg)
     uint32_t frame_len = 0;
     uint32_t buf_len = 0;
     esp_err_t ret;
+    uint32_t packet_count = 0;
+    uint32_t dhcp_packet_count = 0;
+    
+    ESP_LOGI(TAG, "=== W5500 RX TASK STARTED ===");
+    
     while (1) {
+        packet_count++;
+        
+        if (packet_count % 100 == 0) {
+            ESP_LOGI(TAG, "W5500 task alive, cycles: %lu, DHCP packets: %lu", 
+                    packet_count, dhcp_packet_count);
+        }
+        
         /* check if the task receives any notification */
         if (emac->int_gpio_num >= 0) {                                   // if in interrupt mode
             if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000)) == 0 &&    // if no notification ...
                     gpio_get_level(emac->int_gpio_num) != 0) {           // ...and no interrupt asserted
+                ESP_LOGD(TAG, "No interrupt, checking again");
                 continue;                                                // -> just continue to check again
             }
         } else {
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         }
+        
+        ESP_LOGD(TAG, "Task awakened, checking for packets");
+        
         /* read interrupt status */
         w5500_read(emac, W5500_REG_SOCK_IR(0), &status, sizeof(status));
+        ESP_LOGD(TAG, "Interrupt status: 0x%02x", status);
+        
         /* packet received */
         if (status & W5500_SIR_RECV) {
+            ESP_LOGI(TAG, "=== PACKET RECEIVED (0x%02x) ===", status);
             status = W5500_SIR_RECV;
             /* clear interrupt status */
             w5500_write(emac, W5500_REG_SOCK_IR(0), &status, sizeof(status));
+            
             do {
                 /* define max expected frame len */
                 frame_len = ETH_MAX_PACKET_SIZE;
                 if ((ret = emac_w5500_alloc_recv_buf(emac, &buffer, &frame_len)) == ESP_OK) {
                     if (buffer != NULL) {
+                        ESP_LOGI(TAG, "Buffer allocated, frame_len=%lu bytes", frame_len);
                         /* we have memory to receive the frame of maximal size previously defined */
                         buf_len = W5500_ETH_MAC_RX_BUF_SIZE_AUTO;
                         if (emac->parent.receive(&emac->parent, buffer, &buf_len) == ESP_OK) {
                             if (buf_len == 0) {
+                                ESP_LOGW(TAG, "Zero length buffer (frame_len=%lu)", frame_len);
                                 free(buffer);
                             } else if (frame_len > buf_len) {
-                                ESP_LOGE(TAG, "received frame was truncated");
+                                ESP_LOGE(TAG, "received frame was truncated: %lu > %lu", frame_len, buf_len);
                                 free(buffer);
                             } else {
-                                ESP_LOGD(TAG, "receive len=%" PRIu32, buf_len);
+                                ESP_LOGI(TAG, "Packet successfully read: %lu bytes", buf_len);
+                                
+                                // DHCP DEBUG: Check for DHCP packets (UDP ports 67/68)
+                                if (buf_len >= 42) { // Minimum size for IP+UDP+DHCP
+                                    uint8_t *eth_header = buffer;
+                                    uint8_t *ip_header = buffer + 14;
+                                    
+                                    // Check if it's IP (0x0800) and UDP (0x11)
+                                    if (eth_header[12] == 0x08 && eth_header[13] == 0x00 && 
+                                        ip_header[9] == 0x11) {
+                                        uint16_t src_port = (ip_header[20] << 8) | ip_header[21];
+                                        uint16_t dst_port = (ip_header[22] << 8) | ip_header[23];
+                                        
+                                        ESP_LOGI(TAG, "UDP packet detected: %d -> %d", src_port, dst_port);
+                                        
+                                        if (src_port == 67 || src_port == 68 || 
+                                            dst_port == 67 || dst_port == 68) {
+                                            dhcp_packet_count++;
+                                            ESP_LOGI(TAG, "=== DHCP PACKET #%lu ===", dhcp_packet_count);
+                                            ESP_LOGI(TAG, "DHCP: %d -> %d, len=%u", 
+                                                    src_port, dst_port, buf_len);
+                                            
+                                            // Log first 64 bytes for debugging
+                                            ESP_LOG_BUFFER_HEX_LEVEL("DHCP Header", buffer, 
+                                                                    buf_len > 64 ? 64 : buf_len, 
+                                                                    ESP_LOG_INFO);
+                                        }
+                                    } else if (eth_header[12] == 0x08 && eth_header[13] == 0x06) {
+                                        // ARP packet
+                                        ESP_LOGI(TAG, "ARP packet received, len=%lu", buf_len);
+                                    } else if (eth_header[12] == 0x08 && eth_header[13] == 0x00 && 
+                                               ip_header[9] == 0x01) {
+                                        // ICMP packet (ping)
+                                        ESP_LOGI(TAG, "ICMP packet received, len=%lu", buf_len);
+                                    }
+                                } else if (buf_len >= 14) {
+                                    // Just Ethernet frame
+                                    ESP_LOGI(TAG, "Raw Ethernet frame, len=%lu", buf_len);
+                                    ESP_LOG_BUFFER_HEX_LEVEL("Eth Header", buffer, 
+                                                            buf_len > 32 ? 32 : buf_len, 
+                                                            ESP_LOG_DEBUG);
+                                }
+                                
                                 /* pass the buffer to stack (e.g. TCP/IP layer) */
+                                ESP_LOGD(TAG, "Passing packet to stack...");
                                 emac->eth->stack_input(emac->eth, buffer, buf_len);
+                                ESP_LOGD(TAG, "Packet passed to stack");
                             }
                         } else {
                             ESP_LOGE(TAG, "frame read from module failed");
@@ -859,6 +975,13 @@ static void emac_w5500_task(void *arg)
                     ESP_LOGE(TAG, "unexpected error 0x%x", ret);
                 }
             } while (emac->packets_remain);
+        } else {
+            // Check global interrupt register
+            uint8_t sir;
+            w5500_read(emac, W5500_REG_SIR, &sir, sizeof(sir));
+            if (sir) {
+                ESP_LOGI(TAG, "Global interrupt register: 0x%02x", sir);
+            }
         }
     }
     vTaskDelete(NULL);
@@ -997,6 +1120,10 @@ esp_eth_mac_t *esp_eth_mac_new_w5500(const eth_w5500_config_t *w5500_config, con
         };
         ESP_GOTO_ON_FALSE(esp_timer_create(&poll_timer_args, &emac->poll_timer) == ESP_OK, NULL, err, TAG, "create poll timer failed");
     }
+
+    ESP_LOGI(TAG, "=== W5500 MAC CREATED SUCCESSFULLY ===");
+    ESP_LOGI(TAG, "RX task stack: %d, RX buffer: %p", mac_config->rx_task_stack_size, emac->rx_buffer);
+    ESP_LOGI(TAG, "Interrupt GPIO: %d, Poll period: %lu ms", emac->int_gpio_num, emac->poll_period_ms);
 
     return &(emac->parent);
 

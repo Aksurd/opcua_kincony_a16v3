@@ -23,6 +23,7 @@ static esp_event_handler_instance_t instance_got_ip = NULL;
 static bool s_wifi_initialized = false;
 static bool s_ip_config_applied = false;
 static bool s_connection_in_progress = false;
+static bool s_static_ip_applied = false; // Флаг применения статического IP
 
 static void event_handler(void* arg, esp_event_base_t event_base,
                           int32_t event_id, void* event_data)
@@ -43,6 +44,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*) event_data;
                 ESP_LOGW(TAG, "Disconnected from AP, reason: %d", event->reason);
                 
+                s_static_ip_applied = false; // Сбрасываем флаг
                 s_ip_config_applied = false;
                 s_connection_in_progress = false;
                 
@@ -72,23 +74,29 @@ static void event_handler(void* arg, esp_event_base_t event_base,
             case IP_EVENT_STA_GOT_IP: {
                 ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
                 
-                ESP_LOGI(TAG, "Got IP via DHCP:" IPSTR, IP2STR(&event->ip_info.ip));
-                ESP_LOGI(TAG, "Netmask:" IPSTR ", Gateway:" IPSTR,
-                        IP2STR(&event->ip_info.netmask),
-                        IP2STR(&event->ip_info.gw));
+                ESP_LOGI(TAG, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
                 
                 if (g_config.wifi.ip_config.mode == NET_STATIC) {
-                    ESP_LOGI(TAG, "Static IP configured, applying custom configuration...");
-                    esp_err_t ret = wifi_apply_ip_config();
-                    if (ret == ESP_OK) {
+                    // Проверяем, совпадает ли полученный IP с нашим статическим IP
+                    if (event->ip_info.ip.addr == g_config.wifi.ip_config.ip_info.ip.addr) {
+                        ESP_LOGI(TAG, "Already have correct static IP, connection established");
+                        s_static_ip_applied = true;
                         s_retry_num = 0;
                         s_connection_in_progress = false;
                         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-                        ESP_LOGI(TAG, "Static IP applied successfully");
                     } else {
-                        ESP_LOGE(TAG, "Static IP configuration failed: %s", esp_err_to_name(ret));
+                        ESP_LOGI(TAG, "Applying static IP configuration...");
+                        esp_err_t ret = wifi_apply_ip_config();
+                        if (ret == ESP_OK) {
+                            // Флаг установится внутри wifi_apply_ip_config()
+                            // WIFI_CONNECTED_BIT также установится там после применения IP
+                        } else {
+                            ESP_LOGE(TAG, "Static IP configuration failed: %s", esp_err_to_name(ret));
+                            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+                        }
                     }
                 } else {
+                    // DHCP режим
                     ESP_LOGI(TAG, "Using DHCP-assigned IP");
                     s_retry_num = 0;
                     s_connection_in_progress = false;
@@ -99,6 +107,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 
             case IP_EVENT_STA_LOST_IP:
                 ESP_LOGW(TAG, "Lost IP address");
+                s_static_ip_applied = false;
                 s_ip_config_applied = false;
                 break;
                 
@@ -122,16 +131,27 @@ esp_err_t wifi_apply_ip_config(void)
     if (g_config.wifi.ip_config.mode == NET_STATIC) {
         ESP_LOGI(TAG, "Setting static IP configuration...");
         
-        // Stop DHCP client first
+        // Проверяем текущий IP
+        esp_netif_ip_info_t current_ip;
+        esp_netif_get_ip_info(s_wifi_netif, &current_ip);
+        
+        // Если уже установлен нужный IP, ничего не делаем
+        if (current_ip.ip.addr == g_config.wifi.ip_config.ip_info.ip.addr) {
+            ESP_LOGI(TAG, "Static IP already set: " IPSTR, IP2STR(&current_ip.ip));
+            s_static_ip_applied = true;
+            return ESP_OK;
+        }
+        
+        // Останавливаем DHCP клиент
         esp_err_t ret = esp_netif_dhcpc_stop(s_wifi_netif);
         if (ret != ESP_OK && ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
             ESP_LOGW(TAG, "Failed to stop DHCP client: %s", esp_err_to_name(ret));
-            // Continue anyway
+            // Продолжаем в любом случае
         }
         
         vTaskDelay(pdMS_TO_TICKS(100));
         
-        // Apply static IP configuration
+        // Применяем статическую IP конфигурацию
         ESP_LOGI(TAG, "Setting IP: " IPSTR, IP2STR(&g_config.wifi.ip_config.ip_info.ip));
         ESP_LOGI(TAG, "Netmask: " IPSTR, IP2STR(&g_config.wifi.ip_config.ip_info.netmask));
         ESP_LOGI(TAG, "Gateway: " IPSTR, IP2STR(&g_config.wifi.ip_config.ip_info.gw));
@@ -139,10 +159,12 @@ esp_err_t wifi_apply_ip_config(void)
         ret = esp_netif_set_ip_info(s_wifi_netif, &g_config.wifi.ip_config.ip_info);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to set static IP: %s", esp_err_to_name(ret));
+            // Пробуем вернуться к DHCP
+            esp_netif_dhcpc_start(s_wifi_netif);
             return ret;
         }
         
-        // Apply DNS servers if configured
+        // Применяем DNS серверы если сконфигурированы
         if (g_config.wifi.ip_config.dns_primary != 0) {
             esp_netif_dns_info_t dns;
             dns.ip.u_addr.ip4.addr = g_config.wifi.ip_config.dns_primary;
@@ -180,13 +202,22 @@ esp_err_t wifi_apply_ip_config(void)
         }
     }
     
-    // Set hostname if configured
+    // Устанавливаем hostname если сконфигурирован
     if (strlen(g_config.wifi.ip_config.hostname) > 0) {
         esp_netif_set_hostname(s_wifi_netif, g_config.wifi.ip_config.hostname);
         ESP_LOGI(TAG, "Hostname set: %s", g_config.wifi.ip_config.hostname);
     }
     
+    s_static_ip_applied = true;
     s_ip_config_applied = true;
+    
+    // После применения статического IP, устанавливаем флаг подключения
+    if (g_config.wifi.ip_config.mode == NET_STATIC && s_wifi_event_group != NULL) {
+        s_retry_num = 0;
+        s_connection_in_progress = false;
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+    
     ESP_LOGI(TAG, "IP configuration applied successfully");
     return ESP_OK;
 }
@@ -215,14 +246,14 @@ esp_err_t wifi_connect(void)
     
     ESP_LOGI(TAG, "Initializing Wi-Fi with SSID: %s", g_config.wifi.ssid);
     
-    // Create event group for Wi-Fi connection status
+    // Создаем event group для статуса Wi-Fi подключения
     s_wifi_event_group = xEventGroupCreate();
     if (s_wifi_event_group == NULL) {
         ESP_LOGE(TAG, "Failed to create event group");
         return ESP_FAIL;
     }
     
-    // Create default Wi-Fi STA interface
+    // Создаем интерфейс Wi-Fi STA по умолчанию
     s_wifi_netif = esp_netif_create_default_wifi_sta();
     if (s_wifi_netif == NULL) {
         ESP_LOGE(TAG, "Failed to create network interface");
@@ -233,7 +264,7 @@ esp_err_t wifi_connect(void)
     
     ESP_LOGI(TAG, "Network interface created");
     
-    // Register event handlers
+    // Регистрируем обработчики событий
     esp_err_t ret = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                                         &event_handler, NULL, &instance_any_id);
     if (ret != ESP_OK) {
@@ -248,7 +279,7 @@ esp_err_t wifi_connect(void)
         goto cleanup;
     }
     
-    // Initialize Wi-Fi with default config
+    // Инициализируем Wi-Fi с конфигурацией по умолчанию
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ret = esp_wifi_init(&cfg);
     if (ret != ESP_OK) {
@@ -256,7 +287,7 @@ esp_err_t wifi_connect(void)
         goto cleanup;
     }
     
-    // Configure Wi-Fi connection parameters
+    // Конфигурируем параметры подключения Wi-Fi
     wifi_config_t wifi_config = {
         .sta = {
             .ssid = "",
@@ -267,18 +298,18 @@ esp_err_t wifi_connect(void)
         },
     };
     
-    // Copy SSID and password (safe with strncpy)
+    // Копируем SSID и пароль (безопасно с strncpy)
     strncpy((char*)wifi_config.sta.ssid, g_config.wifi.ssid, sizeof(wifi_config.sta.ssid) - 1);
     wifi_config.sta.ssid[sizeof(wifi_config.sta.ssid) - 1] = '\0';
     
     strncpy((char*)wifi_config.sta.password, g_config.wifi.password, sizeof(wifi_config.sta.password) - 1);
     wifi_config.sta.password[sizeof(wifi_config.sta.password) - 1] = '\0';
     
-    // Configure PMF (Protected Management Frames)
+    // Конфигурируем PMF (Protected Management Frames)
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
     
-    // Configure scanning
+    // Конфигурируем сканирование
     if (g_config.wifi.channel > 0) {
         wifi_config.sta.channel = g_config.wifi.channel;
         wifi_config.sta.scan_method = WIFI_FAST_SCAN;
@@ -288,21 +319,21 @@ esp_err_t wifi_connect(void)
         ESP_LOGI(TAG, "Using automatic channel selection");
     }
     
-    // Set Wi-Fi mode to STA
+    // Устанавливаем режим Wi-Fi в STA
     ret = esp_wifi_set_mode(WIFI_MODE_STA);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set Wi-Fi mode: %s", esp_err_to_name(ret));
         goto cleanup;
     }
     
-    // Apply Wi-Fi configuration
+    // Применяем конфигурацию Wi-Fi
     ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set Wi-Fi configuration: %s", esp_err_to_name(ret));
         goto cleanup;
     }
     
-    // Start Wi-Fi
+    // Запускаем Wi-Fi
     ret = esp_wifi_start();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start Wi-Fi: %s", esp_err_to_name(ret));
@@ -312,13 +343,13 @@ esp_err_t wifi_connect(void)
     s_wifi_initialized = true;
     ESP_LOGI(TAG, "Wi-Fi initialization complete, connecting...");
     
-    // Apply pre-connection IP configuration if static
+    // Применяем предварительную IP конфигурацию если статическая
     if (g_config.wifi.ip_config.mode == NET_STATIC) {
         ESP_LOGI(TAG, "Pre-configuring static IP before connection");
         wifi_apply_ip_config();
     }
     
-    // Wait for connection with timeout
+    // Ждем подключения с таймаутом
     uint32_t timeout_ms = g_config.wifi.scan_timeout_ms > 0 ? 
                          g_config.wifi.scan_timeout_ms : 30000;
     
@@ -334,7 +365,7 @@ esp_err_t wifi_connect(void)
         ESP_LOGI(TAG, "Wi-Fi connected successfully!");
         ESP_LOGI(TAG, "SSID: %s", g_config.wifi.ssid);
         
-        // Get and log final IP configuration
+        // Получаем и логируем финальную IP конфигурацию
         esp_netif_ip_info_t ip_info;
         if (esp_netif_get_ip_info(s_wifi_netif, &ip_info) == ESP_OK) {
             ESP_LOGI(TAG, "Final IP: " IPSTR, IP2STR(&ip_info.ip));
@@ -349,7 +380,7 @@ esp_err_t wifi_connect(void)
         ESP_LOGE(TAG, "Wi-Fi connection timeout (%d ms)", timeout_ms);
     }
     
-    // Connection failed, cleanup
+    // Подключение не удалось, выполняем cleanup
     ESP_LOGI(TAG, "Performing cleanup after failed connection");
     
 cleanup:
@@ -381,6 +412,7 @@ cleanup:
     
     s_connection_in_progress = false;
     s_ip_config_applied = false;
+    s_static_ip_applied = false;
     s_retry_num = 0;
     
     return ESP_FAIL;
@@ -395,7 +427,10 @@ esp_err_t wifi_disconnect(void)
     
     ESP_LOGI(TAG, "Disconnecting Wi-Fi...");
     
-    // Unregister event handlers
+    // Сбрасываем флаги
+    s_static_ip_applied = false;
+    
+    // Отписываемся от обработчиков событий
     if (instance_any_id != NULL) {
         esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id);
         instance_any_id = NULL;
@@ -406,7 +441,7 @@ esp_err_t wifi_disconnect(void)
         instance_got_ip = NULL;
     }
     
-    // Stop Wi-Fi
+    // Останавливаем Wi-Fi
     if (s_wifi_initialized) {
         esp_wifi_disconnect();
         esp_wifi_stop();
@@ -414,13 +449,13 @@ esp_err_t wifi_disconnect(void)
         s_wifi_initialized = false;
     }
     
-    // Clean up network interface
+    // Очищаем сетевой интерфейс
     if (s_wifi_netif != NULL) {
         esp_netif_destroy(s_wifi_netif);
         s_wifi_netif = NULL;
     }
     
-    // Clean up event group
+    // Очищаем event group
     if (s_wifi_event_group != NULL) {
         vEventGroupDelete(s_wifi_event_group);
         s_wifi_event_group = NULL;

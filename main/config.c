@@ -23,7 +23,7 @@ system_config_t g_config = {
         .channel = 0, // авто
         .priority = 200,
         .ip_config = {
-            .mode = NET_STATIC,  // БЫЛО: NET_DHCP - СТАЛО: NET_STATIC
+            .mode = NET_DHCP,  // БЫЛО: NET_DHCP - СТАЛО: NET_STATIC
             .ip_info = {
 		    .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 129) },   // 10.0.0.128
 		    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },  // 255.255.255.0
@@ -50,7 +50,7 @@ system_config_t g_config = {
 	    .speed = ETH_SPEED_100M,
 	    .priority = 100,
 	    .ip_config = {
-            .mode = NET_STATIC,  // БЫЛО: NET_DHCP - СТАЛО: NET_STATIC
+            .mode = NET_DHCP,  // БЫЛО: NET_DHCP - СТАЛО: NET_STATIC
 		    .ip_info = {
 			    .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 128) },   // 10.0.0.128
 			    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },  // 255.255.255.0
