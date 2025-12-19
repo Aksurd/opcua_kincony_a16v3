@@ -437,8 +437,8 @@ static void connection_scan(void)
     network_manager_set_state_callback(opc_network_state_callback);
     ESP_LOGI(NET_TAG, "Network callback registered");
     
-    // Запускаем fallback таймер (на всякий случай)
-    xTaskCreate(start_opcua_fallback, "fallback_timer", 2048, NULL, 2, NULL);
+    // Запускаем fallback таймер (на всякий случай) - УВЕЛИЧЕН СТЕК ДО 4096!
+    xTaskCreate(start_opcua_fallback, "fallback_timer", 4096, NULL, 2, NULL);
     ESP_LOGI(NET_TAG, "Fallback timer started (10 seconds)");
     
     // Start both network connections
