@@ -6,19 +6,19 @@
  * ============================================================================
  */
 
-#include "opcua_esp32.h"
-#include "model.h"
-#include "io_cache.h"
-#include "network_manager.h"
-#include "esp_task_wdt.h"          
-#include "esp_sntp.h"              
-#include "nvs_flash.h"             
-#include "esp_err.h"               
-#include "esp_flash.h"             
-#include "esp_flash_encrypt.h"     
-#include "esp_event.h"
-#include "esp_eth.h"
-#include "config.h"
+#include "opcua_esp32.h"      // Сетевые настройки
+#include "model.h"           // Объявления функций OPC UA
+#include "io_cache.h"        // Кэш ввода/вывода
+#include "network_manager.h" // Менеджер сети
+#include "esp_task_wdt.h"    // Watchdog
+#include "esp_sntp.h"        // SNTP
+#include "nvs_flash.h"       // NVS
+#include "esp_err.h"         // Ошибки ESP
+#include "esp_flash.h"       // Flash
+#include "esp_flash_encrypt.h" // Шифрование Flash
+#include "esp_event.h"       // События
+#include "esp_eth.h"         // Ethernet
+#include "config.h"          // Конфигурация
 
 #define EXAMPLE_ESP_MAXIMUM_RETRY 10
 

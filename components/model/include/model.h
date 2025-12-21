@@ -19,6 +19,22 @@
 #define DIO_OUT2_ADDR 0x25
 
 /* ============================================================================
+ * ADC Configuration
+ * ============================================================================ */
+
+/** @brief ADC channel 1 configuration (GPIO4 - ANALOG_A1) */
+#define OUR_ADC_CHANNEL_1     ADC_CHANNEL_3
+/** @brief ADC channel 2 configuration (GPIO6 - ANALOG_A2) */
+#define OUR_ADC_CHANNEL_2     ADC_CHANNEL_5
+/** @brief ADC channel 3 configuration (GPIO7 - ANALOG_A3) */
+#define OUR_ADC_CHANNEL_3     ADC_CHANNEL_6
+/** @brief ADC channel 4 configuration (GPIO5 - ANALOG_A4) */
+#define OUR_ADC_CHANNEL_4     ADC_CHANNEL_4
+
+/** @brief Number of ADC channels available */
+#define NUM_ADC_CHANNELS  4
+
+/* ============================================================================
  * Discrete I/O Functions
  * ============================================================================ */
 
@@ -300,23 +316,9 @@ UA_StatusCode readLoopbackOutput(UA_Server *server,
                                 UA_Boolean sourceTimeStamp, const UA_NumericRange *range,
                                 UA_DataValue *dataValue);
 
-#endif /* MODEL_H */
-
 /* ============================================================================
  * ADC Functions
  * ============================================================================ */
-
-/** @brief ADC channel 1 configuration (GPIO4 - ANALOG_A1) */
-#define OUR_ADC_CHANNEL_1     ADC_CHANNEL_3
-/** @brief ADC channel 2 configuration (GPIO6 - ANALOG_A2) */
-#define OUR_ADC_CHANNEL_2     ADC_CHANNEL_5
-/** @brief ADC channel 3 configuration (GPIO7 - ANALOG_A3) */
-#define OUR_ADC_CHANNEL_3     ADC_CHANNEL_6
-/** @brief ADC channel 4 configuration (GPIO5 - ANALOG_A4) */
-#define OUR_ADC_CHANNEL_4     ADC_CHANNEL_4
-
-/** @brief Number of ADC channels available */
-#define NUM_ADC_CHANNELS  4
 
 /**
  * @brief Initialize ADC hardware
@@ -390,3 +392,5 @@ UA_StatusCode readAdcChannel(UA_Server *server,
  * @param server OPC UA server instance
  */
 void addAdcVariables(UA_Server *server);
+
+#endif /* MODEL_H */

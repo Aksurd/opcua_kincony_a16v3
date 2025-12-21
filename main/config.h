@@ -2,15 +2,43 @@
 #define CONFIG_H
 
 #include "esp_netif.h"
-#include "driver/spi_master.h"
+//#include "driver/spi_master.h"
 #include "esp_eth.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// ==================== Типы и константы ====================
+/* ==================== OPC UA Аутентификация и права (НОВОЕ) ==================== */
+
+typedef enum {
+    OPCUA_RIGHT_NONE      = 0x0000,
+    OPCUA_RIGHT_CONNECT   = 0x0001,  // Может подключиться к серверу
+    OPCUA_RIGHT_BROWSE    = 0x0002,  // Просмотр адресного пространства
+    OPCUA_RIGHT_READ      = 0x0004,  // Чтение переменных
+    OPCUA_RIGHT_WRITE     = 0x0008,  // Запись переменных
+    OPCUA_RIGHT_SUBSCRIBE = 0x0010,  // Подписка на изменения
+    OPCUA_RIGHT_CALL      = 0x0020,  // Вызов методов
+    OPCUA_RIGHT_CONFIG    = 0x0040,  // Изменение конфигурации
+    OPCUA_RIGHT_ADMIN     = 0x8000   // Административные права
+} opcua_user_rights_t;
+
+#define OPCUA_ROLE_VIEWER      (OPCUA_RIGHT_CONNECT | OPCUA_RIGHT_BROWSE | OPCUA_RIGHT_READ)
+#define OPCUA_ROLE_OPERATOR    (OPCUA_ROLE_VIEWER | OPCUA_RIGHT_WRITE | OPCUA_RIGHT_SUBSCRIBE)
+#define OPCUA_ROLE_MAINTAINER  (OPCUA_ROLE_OPERATOR | OPCUA_RIGHT_CALL | OPCUA_RIGHT_CONFIG)
+#define OPCUA_ROLE_ADMIN       (0xFFFF)
+
+typedef struct {
+    char username[24];
+    char password[24];
+    uint16_t rights;
+    bool enabled;
+} opcua_user_t;
+
+/* ==================== Существующие типы (БЕЗ ИЗМЕНЕНИЙ) ==================== */
+
 typedef enum {
     NET_DHCP = 0,
     NET_STATIC = 1
@@ -21,138 +49,91 @@ typedef enum {
     TIME_SYNC_SNTP = 1
 } time_sync_mode_t;
 
-// ==================== Конфигурация IP ====================
 typedef struct {
-    net_ip_mode_t mode;          // DHCP или статика
-    
-    // Статический IP (используется если mode == NET_STATIC)
-    esp_netif_ip_info_t ip_info; // IP, маска, шлюз
-    
-    // DNS серверы (если 0 - используется DHCP)
-    uint32_t dns_primary;        // Основной DNS
-    uint32_t dns_secondary;      // Вторичный DNS
-    
-    // Hostname (если пусто - используется дефолтный)
+    net_ip_mode_t mode;
+    esp_netif_ip_info_t ip_info;
+    uint32_t dns_primary;
+    uint32_t dns_secondary;
     char hostname[32];
 } ip_config_t;
 
-// ==================== Конфигурация Wi-Fi ====================
-// ИЗМЕНЕНИЕ: переименовали wifi_config_t чтобы избежать конфликта
 typedef struct {
-    bool enable;                 // Включить Wi-Fi
-    
-    // Параметры сети
+    bool enable;
     char ssid[32];
     char password[64];
-    uint8_t authmode;           // WIFI_AUTH_WPA2_PSK и т.д.
-    
-    // Параметры подключения
-    uint8_t max_retry;          // Максимальное количество попыток
-    uint16_t scan_timeout_ms;   // Таймаут сканирования
-    
-    // Настройки канала (0 = авто)
+    uint8_t authmode;
+    uint8_t max_retry;
+    uint16_t scan_timeout_ms;
     uint8_t channel;
-    
-    // IP конфигурация для этого адаптера
     ip_config_t ip_config;
-    
-    // Приоритет (если оба адаптера активны)
-    uint8_t priority;           // 0-255, чем больше - тем выше приоритет
-} app_wifi_config_t;  // <-- ИЗМЕНЕНО С wifi_config_t на app_wifi_config_t
+    uint8_t priority;
+} app_wifi_config_t;
 
-// ==================== Конфигурация Ethernet (W5500) ====================
 typedef struct {
-    bool enable;                 // Включить Ethernet
-    
-    // SPI пины для W5500
+    bool enable;
     int mosi_pin;
     int miso_pin;
     int sclk_pin;
     int cs_pin;
     int reset_pin;
     int interrupt_pin;
-    
-    // SPI настройки
     int clock_speed_hz;
     spi_host_device_t host;
-    
-    // Настройки PHY
-    eth_duplex_t duplex;        // Полный/полудуплекс
-    eth_speed_t speed;          // 10/100 Mbps
-    
-    // IP конфигурация для этого адаптера
+    eth_duplex_t duplex;
+    eth_speed_t speed;
     ip_config_t ip_config;
-    
-    // Приоритет (если оба адаптера активны)
-    uint8_t priority;           // 0-255, чем больше - тем выше приоритет
+    uint8_t priority;
 } eth_config_t;
 
-// ==================== Конфигурация времени ====================
 typedef struct {
-    time_sync_mode_t mode;      // Режим синхронизации
-    
-    // SNTP серверы (если mode == TIME_SYNC_SNTP)
+    time_sync_mode_t mode;
     char ntp_server1[64];
     char ntp_server2[64];
     char ntp_server3[64];
-    
-    // Таймзона (например, "UTC+3" или "MSK-3")
     char timezone[32];
-    
-    // Интервал синхронизации (секунды)
     uint32_t sync_interval;
-    
-    // Автосинхронизация при получении IP
     bool sync_on_ip_obtained;
 } time_config_t;
 
-// ==================== Глобальная конфигурация ====================
+/* ==================== Глобальная конфигурация ==================== */
+
 typedef struct {
-    // Конфигурации адаптеров
-    app_wifi_config_t wifi;  // <-- ИЗМЕНЕНО С wifi_config_t на app_wifi_config_t
+    // Существующие поля (БЕЗ ИЗМЕНЕНИЙ в порядке)
+    app_wifi_config_t wifi;
     eth_config_t eth;
-    
-    // Конфигурация времени
     time_config_t time;
-    
-    // Настройки маршрутизации
-    bool ip_forwarding;         // Включить форвардинг пакетов
-    bool prefer_wifi;           // Предпочитать Wi-Fi как основной шлюз
-    
-    // Флаги состояния
+    bool ip_forwarding;
+    bool prefer_wifi;
     bool init_complete;
-    bool config_changed;        // Флаг изменения конфигурации
+    bool config_changed;
+    
+    // НОВЫЕ поля для OPC UA (добавлены в конец)
+    bool opcua_auth_enable;
+    opcua_user_t opcua_users[10];
+    uint8_t opcua_user_count;
 } system_config_t;
 
-// Глобальный экземпляр конфигурации
 extern system_config_t g_config;
 
-// ==================== Функции управления конфигурацией ====================
+/* ==================== Существующие функции (БЕЗ ИЗМЕНЕНИЙ) ==================== */
 
-// Инициализация конфигурации значениями по умолчанию
 void config_init_defaults(void);
-
-// Установка статического IP для Wi-Fi
 void config_wifi_set_static_ip(const char *ip, const char *netmask, const char *gateway);
-
-// Установка статического IP для Ethernet
 void config_eth_set_static_ip(const char *ip, const char *netmask, const char *gateway);
-
-// Включение DHCP для Wi-Fi
 void config_wifi_set_dhcp(void);
-
-// Включение DHCP для Ethernet
 void config_eth_set_dhcp(void);
-
-// Установка DNS серверов
 void config_set_dns_servers(const char *primary, const char *secondary);
-
-// Установка NTP серверов
 void config_set_ntp_servers(const char *server1, const char *server2, const char *server3);
-
-// Утилиты преобразования IP
 uint32_t config_ip_to_int(const char *ip_str);
 void config_int_to_ip(uint32_t ip_int, char *buf, size_t buf_size);
+
+/* ==================== НОВЫЕ функции для OPC UA ==================== */
+
+opcua_user_t* config_find_opcua_user(const char *username);
+bool config_check_opcua_password(opcua_user_t *user, const char *password);
+bool config_check_opcua_rights(opcua_user_t *user, uint16_t required_rights);
+bool config_is_opcua_auth_enabled(void);
+void config_set_opcua_auth_enabled(bool enabled);
 
 #ifdef __cplusplus
 }
