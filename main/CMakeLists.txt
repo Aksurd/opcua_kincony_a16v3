@@ -14,11 +14,11 @@ idf_component_register(SRCS "opcua_esp32.c" "config.c"
                         freertos
                         model
                         network
-                        network
-                        network
                         open62541lib
                         spi_flash
                         bootloader_support
+                        esp_driver_spi  # ← ДЛЯ spi_master.h
+                        esp_eth         # ← ДЛЯ esp_eth.h
 )
 
 # Memory configuration for OPC UA

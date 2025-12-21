@@ -6,19 +6,20 @@
  * ============================================================================
  */
 
-#include "opcua_esp32.h"
-#include "model.h"
-#include "io_cache.h"
-#include "network_manager.h"
-#include "esp_task_wdt.h"          
-#include "esp_sntp.h"              
-#include "nvs_flash.h"             
-#include "esp_err.h"               
-#include "esp_flash.h"             
-#include "esp_flash_encrypt.h"     
-#include "esp_event.h"
-#include "esp_eth.h"
-#include "config.h"
+#include "opcua_esp32.h"      // Сетевые настройки
+#include "model.h"           // Объявления функций OPC UA
+#include "io_cache.h"        // Кэш ввода/вывода
+#include "network_manager.h" // Менеджер сети
+#include "esp_task_wdt.h"    // Watchdog
+#include "esp_sntp.h"        // SNTP
+#include "nvs_flash.h"       // NVS
+#include "esp_err.h"         // Ошибки ESP
+#include "esp_flash.h"       // Flash
+#include "esp_flash_encrypt.h" // Шифрование Flash
+#include "esp_event.h"       // События
+#include "esp_eth.h"         // Ethernet
+#include "config.h"          // Конфигурация
+#include "ua_accesscontrol_custom.h"  // Кастомная аутентификация OPC UA
 
 #define EXAMPLE_ESP_MAXIMUM_RETRY 10
 
@@ -190,6 +191,28 @@ static void opcua_task(void *arg)
     
     UA_ServerConfig *config = UA_Server_getConfig(server);
     UA_ServerConfig_setMinimalCustomBuffer(config, 4840, 0, sendBufferSize, recvBufferSize);
+
+    // ============ НАСТРОЙКА КАСТОМНОЙ АУТЕНТИФИКАЦИИ ============
+    ESP_LOGI(TAG, "Configuring custom authentication plugin...");
+    
+    // Определяем параметры аутентификации
+    // allowAnonymous = false - если хотим запретить анонимный доступ при включенной аутентификации
+    // allowAnonymous = true - если хотим разрешить анонимный доступ как fallback
+    UA_Boolean allowAnonymous = true; // Разрешаем анонимный доступ для совместимости
+    
+    // Создаем строку безопасности - в open62541 UA_ByteString это синоним UA_String
+    UA_String securityPolicy = UA_STRING("http://opcfoundation.org/UA/SecurityPolicy#None");
+    
+    UA_StatusCode auth_status = UA_AccessControl_custom_init(config, allowAnonymous, (UA_ByteString*)&securityPolicy);
+    if (auth_status != UA_STATUSCODE_GOOD) {
+        ESP_LOGW(TAG, "Custom authentication init failed: 0x%08X, using default", auth_status);
+    } else {
+        ESP_LOGI(TAG, "Custom authentication configured successfully");
+        ESP_LOGI(TAG, "System auth status: %s", 
+                 g_config.opcua_auth_enable ? "ENABLED" : "DISABLED");
+        ESP_LOGI(TAG, "Anonymous allowed: %s", allowAnonymous ? "YES" : "NO");
+    }
+    // ============ КОНЕЦ НАСТРОЙКИ АУТЕНТИФИКАЦИИ ============
 
     const char *appUri = "open62541.esp32.server";
     UA_String hostName = UA_STRING("opcua-esp32");
@@ -461,7 +484,8 @@ void app_main(void)
     ESP_LOGI(TAG, "Boot count: %d", boot_count);
     ESP_LOGI(TAG, "========================================");
     
-    // Включаем подробные логи
+    // Включаем подробные логи для аутентификации
+    esp_log_level_set("OPCUA_AUTH", ESP_LOG_INFO);
     esp_log_level_set("OPCUA_ESP32", ESP_LOG_VERBOSE);
     esp_log_level_set("net", ESP_LOG_VERBOSE);
     esp_log_level_set("eth", ESP_LOG_INFO);

@@ -12,9 +12,9 @@ system_config_t g_config = {
     .ip_forwarding = true,
     .prefer_wifi = true,
     
-    // Wi-Fi конфигурация по умолчанию
+    // Wi-Fi конфигурация
     .wifi = {
-        .enable = false,
+        .enable = true,
         .ssid = "Mz6",
         .password = "123qWe123Q",
         .authmode = 3, // WIFI_AUTH_WPA2_PSK
@@ -23,62 +23,100 @@ system_config_t g_config = {
         .channel = 0, // авто
         .priority = 200,
         .ip_config = {
-            .mode = NET_DHCP,  // БЫЛО: NET_DHCP - СТАЛО: NET_STATIC
+            .mode = NET_DHCP,
             .ip_info = {
-		    .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 129) },   // 10.0.0.128
-		    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },  // 255.255.255.0
-		    .gw = { .addr = ESP_IP4TOADDR(10, 0, 0, 1) }      // 10.0.0.1
+                .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 129) },
+                .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },
+                .gw = { .addr = ESP_IP4TOADDR(10, 0, 0, 1) }
             },
-		    .dns_primary = ESP_IP4TOADDR(10, 0, 0, 1),      // Google DNS
-		    .dns_secondary = ESP_IP4TOADDR(8, 8, 8, 8),    // Google DNS вторичный
+            .dns_primary = ESP_IP4TOADDR(10, 0, 0, 1),
+            .dns_secondary = ESP_IP4TOADDR(8, 8, 8, 8),
             .hostname = "esp32-wifi"
         }
     },
     
-    // Ethernet конфигурация по умолчанию
+    // Ethernet конфигурация
     .eth = {
-	    .enable = true,
-	    .mosi_pin = 43,
-	    .miso_pin = 44,
-	    .sclk_pin = 42,
-	    .cs_pin = 15,
-	    .reset_pin = 1,
-	    .interrupt_pin = 2,
-	    .clock_speed_hz = 36000000, // 20 MHz
-	    .host = SPI2_HOST,  // ИЗМЕНИТЬ С SPI3_HOST на SPI2_HOST (для ESP32-S3)
-	    .duplex = ETH_DUPLEX_FULL,
-	    .speed = ETH_SPEED_100M,
-	    .priority = 100,
-	    .ip_config = {
-            .mode = NET_DHCP,  // БЫЛО: NET_DHCP - СТАЛО: NET_STATIC
-		    .ip_info = {
-			    .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 128) },   // 10.0.0.128
-			    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },  // 255.255.255.0
-			    .gw = { .addr = ESP_IP4TOADDR(10, 0, 0, 1) }      // 10.0.0.1
-		    },
-			    .dns_primary = ESP_IP4TOADDR(10, 0, 0, 1),      // Google DNS
-			    .dns_secondary = ESP_IP4TOADDR(8, 8, 8, 8),    // Google DNS вторичный
-            	.hostname = "esp32-eth"
+        .enable = false,
+        .mosi_pin = 43,
+        .miso_pin = 44,
+        .sclk_pin = 42,
+        .cs_pin = 15,
+        .reset_pin = 1,
+        .interrupt_pin = 2,
+        .clock_speed_hz = 36000000,
+        .host = SPI2_HOST,
+        .duplex = ETH_DUPLEX_FULL,
+        .speed = ETH_SPEED_100M,
+        .priority = 100,
+        .ip_config = {
+            .mode = NET_DHCP,
+            .ip_info = {
+                .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 128) },
+                .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },
+                .gw = { .addr = ESP_IP4TOADDR(10, 0, 0, 1) }
+            },
+            .dns_primary = ESP_IP4TOADDR(10, 0, 0, 1),
+            .dns_secondary = ESP_IP4TOADDR(8, 8, 8, 8),
+            .hostname = "esp32-eth"
         }
     },
     
-    // Конфигурация времени по умолчанию
+    // Конфигурация времени
     .time = {
         .mode = TIME_SYNC_SNTP,
         .ntp_server1 = "pool.ntp.org",
         .ntp_server2 = "time.google.com",
         .ntp_server3 = "time.windows.com",
         .timezone = "UTC+3",
-        .sync_interval = 3600, // 1 час
+        .sync_interval = 3600,
         .sync_on_ip_obtained = true
-    }
+    },
+    
+    // НОВЫЕ поля OPC UA
+    .opcua_auth_enable = true,           // Авторизация включена по умолчанию
+    .opcua_anonymous_enable = false,      // Анонимный доступ разрешен по умолчанию
+    .opcua_user_count = 0                // Будет установлено в config_init_defaults
 };
+
+/* ==================== Существующие функции ==================== */
 
 void config_init_defaults(void)
 {
-    // Уже инициализировано статически выше
+    // Инициализация новых полей OPC UA
+    g_config.opcua_user_count = 3;
+    
+    // Пользователь 0: operator (только чтение и просмотр)
+    strcpy(g_config.opcua_users[0].username, "operator");
+    strcpy(g_config.opcua_users[0].password, "readonly123");
+    g_config.opcua_users[0].rights = OPCUA_ROLE_VIEWER;
+    g_config.opcua_users[0].enabled = true;
+    
+    // Пользователь 1: engineer (чтение/запись)
+    strcpy(g_config.opcua_users[1].username, "engineer");
+    strcpy(g_config.opcua_users[1].password, "readwrite456");
+    g_config.opcua_users[1].rights = OPCUA_ROLE_OPERATOR;
+    g_config.opcua_users[1].enabled = true;
+    
+    // Пользователь 2: admin (все права)
+    strcpy(g_config.opcua_users[2].username, "admin");
+    strcpy(g_config.opcua_users[2].password, "admin789");
+    g_config.opcua_users[2].rights = OPCUA_ROLE_ADMIN;
+    g_config.opcua_users[2].enabled = true;
+    
+    // Остальные пользователи отключены
+    for (int i = 3; i < 10; i++) {
+        g_config.opcua_users[i].username[0] = '\0';
+        g_config.opcua_users[i].password[0] = '\0';
+        g_config.opcua_users[i].rights = OPCUA_RIGHT_NONE;
+        g_config.opcua_users[i].enabled = false;
+    }
+    
     g_config.init_complete = true;
     ESP_LOGI(TAG, "System configuration initialized with defaults");
+    ESP_LOGI(TAG, "OPC UA users: operator, engineer, admin");
+    ESP_LOGI(TAG, "OPC UA auth: %s", g_config.opcua_auth_enable ? "enabled" : "disabled");
+    ESP_LOGI(TAG, "OPC UA anonymous: %s", g_config.opcua_anonymous_enable ? "enabled" : "disabled");
 }
 
 void config_wifi_set_static_ip(const char *ip, const char *netmask, const char *gateway)
@@ -132,7 +170,6 @@ void config_set_dns_servers(const char *primary, const char *secondary)
     g_config.wifi.ip_config.dns_primary = config_ip_to_int(primary);
     g_config.wifi.ip_config.dns_secondary = config_ip_to_int(secondary);
     
-    // Копируем те же DNS для Ethernet
     g_config.eth.ip_config.dns_primary = g_config.wifi.ip_config.dns_primary;
     g_config.eth.ip_config.dns_secondary = g_config.wifi.ip_config.dns_secondary;
     
@@ -159,9 +196,7 @@ void config_set_ntp_servers(const char *server1, const char *server2, const char
     
     g_config.config_changed = true;
     ESP_LOGI(TAG, "NTP servers set: %s, %s, %s", 
-             server1, 
-             server2 ? server2 : "none", 
-             server3 ? server3 : "none");
+             server1, server2 ? server2 : "none", server3 ? server3 : "none");
 }
 
 uint32_t config_ip_to_int(const char *ip_str)
@@ -177,4 +212,69 @@ void config_int_to_ip(uint32_t ip_int, char *buf, size_t buf_size)
 {
     struct ip4_addr ip = { .addr = ip_int };
     ip4addr_ntoa_r(&ip, buf, buf_size);
+}
+
+/* ==================== НОВЫЕ функции для OPC UA ==================== */
+
+opcua_user_t* config_find_opcua_user(const char *username)
+{
+    if (!g_config.init_complete || !username) {
+        return NULL;
+    }
+    
+    for (int i = 0; i < g_config.opcua_user_count; i++) {
+        opcua_user_t *user = &g_config.opcua_users[i];
+        if (user->enabled && strcmp(user->username, username) == 0) {
+            return user;
+        }
+    }
+    
+    return NULL;
+}
+
+bool config_check_opcua_password(opcua_user_t *user, const char *password)
+{
+    if (!user || !password || !user->enabled) {
+        return false;
+    }
+    
+    return (strcmp(user->password, password) == 0);
+}
+
+bool config_check_opcua_rights(opcua_user_t *user, uint16_t required_rights)
+{
+    if (!user || !user->enabled) {
+        return false;
+    }
+    
+    // Если аутентификация отключена, разрешаем все (анонимный доступ)
+    if (!g_config.opcua_auth_enable) {
+        return true;
+    }
+    
+    return ((user->rights & required_rights) == required_rights);
+}
+
+bool config_is_opcua_auth_enabled(void) {
+    return g_config.opcua_auth_enable;
+}
+
+void config_set_opcua_auth_enabled(bool enabled) {
+    g_config.opcua_auth_enable = enabled;
+    g_config.config_changed = true;
+    ESP_LOGI(TAG, "OPC UA authentication %s", enabled ? "enabled" : "disabled");
+}
+
+bool config_is_opcua_anonymous_enabled(void) {
+    // Если аутентификация отключена, анонимный доступ всегда разрешен
+    if (!g_config.opcua_auth_enable) {
+        return true;
+    }
+    return g_config.opcua_anonymous_enable;
+}
+
+void config_set_opcua_anonymous_enabled(bool enabled) {
+    g_config.opcua_anonymous_enable = enabled;
+    g_config.config_changed = true;
+    ESP_LOGI(TAG, "OPC UA anonymous access %s", enabled ? "enabled" : "disabled");
 }
