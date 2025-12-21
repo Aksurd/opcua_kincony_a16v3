@@ -5,11 +5,10 @@
 extern "C" {
 #endif
 
-// 1. Включаем основной заголовок open62541, где определены базовые типы и константы
+// Включаем основной заголовок open62541
 #include <open62541.h>
 
-// 2. Определяем константы прав доступа, если они не были определены в open62541.h
-//    (Актуально для некоторых версий библиотеки)
+// Определяем константы прав доступа, если они не были определены
 #ifndef UA_ACCESSLEVELMASK_BROWSE
     #define UA_ACCESSLEVELMASK_BROWSE (0x1)
 #endif
@@ -26,7 +25,6 @@ extern "C" {
     #define UA_ACCESSLEVELMASK_CALL (0x8)
 #endif
 
-// Эти могут отсутствовать в старых версиях. Если их нет, используем базовые.
 #ifndef UA_ACCESSLEVELMASK_READHISTORY
     #define UA_ACCESSLEVELMASK_READHISTORY UA_ACCESSLEVELMASK_READ
 #endif
@@ -35,11 +33,22 @@ extern "C" {
     #define UA_ACCESSLEVELMASK_WRITEHISTORY UA_ACCESSLEVELMASK_WRITE
 #endif
 
-// Минимальные объявления для нашей кастомной реализации
-typedef struct UA_AccessControl UA_AccessControl;
-typedef struct UA_AccessControlConfig UA_AccessControlConfig;
+// Если типы не определены, объявляем минимальный набор
+#ifndef UA_ENABLE_ACCESS_CONTROL
+    typedef struct UA_AccessControl UA_AccessControl;
+    typedef struct UA_AccessControlConfig UA_AccessControlConfig;
+#endif
+
+typedef struct UA_ServerConfig UA_ServerConfig;
+// UA_ByteString уже определен в open62541.h как typedef UA_String UA_ByteString;
+// НЕ переопределяем его!
 
 UA_AccessControl* UA_AccessControl_custom(const UA_AccessControlConfig *config);
+
+// Добавляем прототип функции инициализации
+UA_StatusCode UA_AccessControl_custom_init(UA_ServerConfig *config,
+                                          UA_Boolean allowAnonymous,
+                                          const UA_ByteString *userTokenPolicyUri);
 
 #ifdef __cplusplus
 }

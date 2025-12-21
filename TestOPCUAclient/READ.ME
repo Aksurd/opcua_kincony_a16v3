@@ -1,0 +1,40 @@
+Компиляция для этого кода с использованием библиотеки open62541:
+
+```bash
+gcc -o test_counter3 ./test_counter3.c -lopen62541 -lm
+```
+
+Или с явным указанием пути к библиотеке (если установлена в нестандартное место):
+
+```bash
+gcc -o test_counter3 ./test_counter3.c -I/usr/local/include -L/usr/local/lib -lopen62541 -lm
+```
+
+Если вы используете статическую линковку:
+
+```bash
+gcc -o test_counter3 ./test_counter3.c /usr/local/lib/libopen62541.a -lm -pthread
+```
+
+**Опции:**
+- `-o test_counter3` - имя выходного исполняемого файла
+- `-lopen62541` - линковка с библиотекой open62541
+- `-lm` - линковка с математической библиотекой (используется в коде)
+- `-pthread` - поддержка многопоточности (может потребоваться)
+- `-I/path/to/include` - путь к заголовочным файлам open62541
+- `-L/path/to/lib` - путь к библиотекам open62541
+
+**Проверьте, что библиотека установлена:**
+```bash
+# Проверка наличия библиотеки
+pkg-config --cflags --libs open62541
+
+# Поиск библиотеки в системе
+find /usr -name "*open62541*" 2>/dev/null
+find /usr/local -name "*open62541*" 2>/dev/null
+```
+
+Если библиотека установлена через пакетный менеджер, может работать:
+```bash
+gcc -o test_counter3 ./test_counter3.c $(pkg-config --cflags --libs open62541) -lm
+```

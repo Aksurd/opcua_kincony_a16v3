@@ -27,6 +27,13 @@ typedef struct {
     const UA_DataType* data_type; // Data type of the tag
 } TagInfo;
 
+// Structure for authentication settings
+typedef struct {
+    char username[32];
+    char password[32];
+    int use_auth;
+} AuthConfig;
+
 // Non-blocking keyboard check function
 // Returns 1 if a key has been pressed, 0 otherwise
 int kbhit(void) {
@@ -65,20 +72,36 @@ int kbhit(void) {
 // Display help message
 void print_help(const char* program_name) {
     printf("OPC UA HIGH-SPEED PERFORMANCE TEST CLIENT\n");
+    printf("=============================================\n");
     printf("Usage: %s [OPTIONS] [SERVER_URL]\n\n", program_name);
     printf("Options:\n");
     printf("  -h, --help           Show this help message\n");
     printf("  -v, --verbose        Enable verbose output\n");
     printf("  -i, --interval N     Set display interval (default: 10 cycles)\n");
     printf("  -t, --timeout N      Set connection timeout in ms (default: 500)\n");
+    printf("  -u, --user NAME      Username for authentication\n");
+    printf("  -p, --pass PASSWORD  Password for authentication\n");
+    printf("  -a, --anonymous      Use anonymous access (default)\n");
+    printf("\n");
+    printf("Authentication options:\n");
+    printf("  -u operator -p readonly123     Read-only access\n");
+    printf("  -u engineer -p readwrite456    Read/write access\n");
+    printf("  -u admin -p admin789           Full admin access\n");
+    printf("  -a                             Anonymous access (if enabled on server)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s opc.tcp://10.0.0.110:4840\n", program_name);
     printf("  %s -v -i 5 opc.tcp://opcua-esp32:4840\n", program_name);
     printf("  %s -t 1000 opc.tcp://10.0.0.110:4840\n", program_name);
+    printf("  %s -u operator -p readonly123 opc.tcp://10.0.0.110:4840\n", program_name);
+    printf("  %s -u engineer -p readwrite456 opc.tcp://10.0.0.110:4840\n", program_name);
+    printf("  %s -u admin -p admin789 opc.tcp://10.0.0.110:4840\n", program_name);
     printf("\n");
     printf("Default server URL: opc.tcp://10.0.0.128:4840\n");
+    printf("Default authentication: Anonymous\n");
     printf("Press any key during test to stop\n");
+    printf("\n");
+    printf("NOTE: If no arguments are provided, this help message is shown.\n");
 }
 
 // Function to display tag values with type information
@@ -112,11 +135,19 @@ void print_tag_value(const char* name, UA_Variant* value) {
 }
 
 int main(int argc, char* argv[]) {
+    // Check if no arguments provided
+    if (argc == 1) {
+        print_help(argv[0]);
+        return 0;
+    }
+    
     // Default values
     char* server_url = "opc.tcp://10.0.0.128:4840";
     int verbose = 0;
     int display_interval = 10;
     int timeout_ms = 500;
+    AuthConfig auth = { .use_auth = 0, .username = "", .password = "" };
+    int url_provided = 0;
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -147,6 +178,26 @@ int main(int argc, char* argv[]) {
                 printf("Error: Missing value for timeout\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "-u") == 0 || strcmp(argv[i], "--user") == 0) {
+            if (i + 1 < argc) {
+                strncpy(auth.username, argv[++i], sizeof(auth.username) - 1);
+                auth.username[sizeof(auth.username) - 1] = '\0';
+                auth.use_auth = 1;
+            } else {
+                printf("Error: Missing value for username\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--pass") == 0) {
+            if (i + 1 < argc) {
+                strncpy(auth.password, argv[++i], sizeof(auth.password) - 1);
+                auth.password[sizeof(auth.password) - 1] = '\0';
+                auth.use_auth = 1;
+            } else {
+                printf("Error: Missing value for password\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--anonymous") == 0) {
+            auth.use_auth = 0; // Explicit anonymous access
         } else if (argv[i][0] == '-') {
             printf("Unknown option: %s\n", argv[i]);
             printf("Use %s -h for help\n", argv[0]);
@@ -154,13 +205,40 @@ int main(int argc, char* argv[]) {
         } else {
             // Assume it's the server URL
             server_url = argv[i];
+            url_provided = 1;
         }
+    }
+    
+    // If URL was not provided but other options were, show help
+    if (!url_provided && argc > 1) {
+        printf("Error: Server URL not specified\n");
+        printf("Use %s -h for help\n", argv[0]);
+        return 1;
+    }
+    
+    // Check if password provided without username
+    if (auth.password[0] && !auth.username[0]) {
+        printf("Error: Password specified without username\n");
+        return 1;
+    }
+    
+    // Check if username provided without password
+    if (auth.username[0] && !auth.password[0]) {
+        printf("Error: Username specified without password\n");
+        printf("Use -p PASSWORD or --pass PASSWORD\n");
+        return 1;
     }
     
     if (verbose) {
         printf("Verbose mode enabled\n");
         printf("Display interval: every %d cycles\n", display_interval);
         printf("Connection timeout: %d ms\n", timeout_ms);
+        printf("Authentication: %s\n", 
+               auth.use_auth ? "Username/Password" : "Anonymous");
+        if (auth.use_auth) {
+            printf("  Username: %s\n", auth.username);
+            printf("  Password: ********\n");
+        }
     }
     
     printf("=============================================\n");
@@ -176,17 +254,37 @@ int main(int argc, char* argv[]) {
     UA_ClientConfig *config = UA_Client_getConfig(client);
     config->timeout = timeout_ms;
     
-    // Connect to OPC UA server
-    printf("Connecting to %s...\n", server_url);
-    UA_StatusCode status = UA_Client_connect(client, server_url);
+    // Set authentication if requested
+    UA_StatusCode status;
+    if (auth.use_auth) {
+        printf("Connecting to %s with username '%s'...\n", server_url, auth.username);
+        status = UA_Client_connectUsername(client, server_url, auth.username, auth.password);
+    } else {
+        printf("Connecting to %s anonymously...\n", server_url);
+        status = UA_Client_connect(client, server_url);
+    }
     
     // Check connection status
     if(status != UA_STATUSCODE_GOOD) {
         printf("Connection failed: 0x%08X\n", status);
+        
+        // Provide more specific error messages
+        if (status == UA_STATUSCODE_BADUSERACCESSDENIED) {
+            printf("Authentication failed: Invalid username or password\n");
+        } else if (status == UA_STATUSCODE_BADIDENTITYTOKENINVALID) {
+            printf("Authentication failed: Identity token invalid\n");
+        } else if (status == UA_STATUSCODE_BADIDENTITYTOKENREJECTED) {
+            printf("Authentication failed: Identity token rejected\n");
+        } else if (status == UA_STATUSCODE_BADUSERACCESSDENIED) {
+            printf("Access denied: User doesn't have permission\n");
+        } else if (status == UA_STATUSCODE_BADSECURITYCHECKSFAILED) {
+            printf("Security check failed\n");
+        }
+        
         UA_Client_delete(client);
         return 1;
     }
-    printf("Connected!\n\n");
+    printf("Connected successfully!\n\n");
     
     // ========== TAG DEFINITION ==========
     
@@ -257,6 +355,14 @@ int main(int argc, char* argv[]) {
         printf("  Display interval: %d cycles\n", display_interval);
         printf("  Timeout: %d ms\n", timeout_ms);
         printf("  Server: %s\n", server_url);
+        printf("  Authentication: %s\n", 
+               auth.use_auth ? "Username/Password" : "Anonymous");
+        if (auth.use_auth) {
+            printf("  User role: %s\n", 
+                   strcmp(auth.username, "admin") == 0 ? "Admin" :
+                   strcmp(auth.username, "engineer") == 0 ? "Engineer" :
+                   strcmp(auth.username, "operator") == 0 ? "Operator" : "Custom");
+        }
         printf("\n");
     }
     
@@ -324,14 +430,21 @@ int main(int argc, char* argv[]) {
         UA_Variant_setScalar(&write_val, &square_state, &UA_TYPES[UA_TYPES_UINT16]);
         
         // Write square wave state to discrete_outputs (tag index 4)
-        UA_Client_writeValueAttribute(client, tags[4].nodeId, &write_val);
+        UA_StatusCode write_status = UA_Client_writeValueAttribute(client, tags[4].nodeId, &write_val);
+        
+        if (write_status != UA_STATUSCODE_GOOD && verbose) {
+            printf("Warning: Write to discrete_outputs failed: 0x%08X\n", write_status);
+        }
         
         // ADDED: Write word counter to loopback_input (tag index 1)
         UA_Variant write_word;
         UA_Variant_init(&write_word);
         UA_Variant_setScalar(&write_word, &word_counter, &UA_TYPES[UA_TYPES_UINT16]);
-        UA_Client_writeValueAttribute(client, tags[1].nodeId, &write_word);
-        // НЕТ UA_Variant_clear(&write_word); - как в оригинале для write_val
+        write_status = UA_Client_writeValueAttribute(client, tags[1].nodeId, &write_word);
+        
+        if (write_status != UA_STATUSCODE_GOOD && verbose) {
+            printf("Warning: Write to loopback_input failed: 0x%08X\n", write_status);
+        }
         
         // ----- READ ALL TAGS -----
         
@@ -377,6 +490,11 @@ int main(int argc, char* argv[]) {
                 tags[i].error_count++;
                 if(i >= 5 && i <= 8) {
                     adc_error_count++;
+                }
+                
+                // Log error in verbose mode
+                if (verbose) {
+                    printf("Error reading %s: 0x%08X\n", tags[i].name, read_status);
                 }
             }
             
@@ -561,6 +679,27 @@ int main(int argc, char* argv[]) {
         printf("⚠ ADC channels: %.1f%% success rate (%d errors)\n", adc_success_rate, adc_error_count);
     }
     
+    // ========== AUTHENTICATION SUMMARY ==========
+    
+    printf("\n=== AUTHENTICATION SUMMARY ===\n");
+    if (auth.use_auth) {
+        printf("Mode:            Username/Password\n");
+        printf("Username:        %s\n", auth.username);
+        printf("Connection:      ✓ Successful\n");
+        
+        // Infer role from username
+        const char* role = "Unknown";
+        if (strcmp(auth.username, "admin") == 0) role = "Admin (full access)";
+        else if (strcmp(auth.username, "engineer") == 0) role = "Engineer (read/write)";
+        else if (strcmp(auth.username, "operator") == 0) role = "Operator (read-only)";
+        
+        printf("Role:            %s\n", role);
+    } else {
+        printf("Mode:            Anonymous\n");
+        printf("Connection:      ✓ Successful\n");
+        printf("Note:            Anonymous access requires server configuration\n");
+    }
+    
     // ========== CLEANUP AND RESET ==========
     
     // Reset discrete_outputs to 0
@@ -575,9 +714,6 @@ int main(int argc, char* argv[]) {
     UA_Variant_init(&final_word);
     UA_Variant_setScalar(&final_word, &word_counter, &UA_TYPES[UA_TYPES_UINT16]);
     UA_Client_writeValueAttribute(client, tags[1].nodeId, &final_word);
-    // НЕТ UA_Variant_clear(&final_word); - как в оригинале
-    
-    // НЕТ UA_Variant_clear(&final_val); - как в оригинале
     
     // Clean up allocated NodeId memory
     for(int i = 0; i < num_tags; i++) {
@@ -596,7 +732,10 @@ int main(int argc, char* argv[]) {
     printf("Total system tags tested: %d\n", num_tags);
     printf("  - 5 system tags\n");
     printf("  - 4 ADC channels\n");
-    printf("Server URL used: %s\n", server_url);
+    printf("Server URL: %s\n", server_url);
+    printf("Authentication: %s\n", 
+           auth.use_auth ? auth.username : "Anonymous");
+    printf("\nTest duration: %.1f seconds\n", total_test_time / 1000.0);
     
     return 0;
 }

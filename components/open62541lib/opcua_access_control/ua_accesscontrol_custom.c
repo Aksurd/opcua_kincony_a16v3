@@ -56,34 +56,68 @@ activateSession_custom(UA_Server *server, UA_AccessControl *ac,
                        void **sessionContext) {
     AccessControlContext *context = (AccessControlContext*)ac->context;
 
+    /* ===== ИСПРАВЛЕНИЕ: Проверка отключенной авторизации ===== */
+    if (!g_config.opcua_auth_enable) {
+        ESP_LOGI("OPCUA_AUTH", "=========================================");
+        ESP_LOGI("OPCUA_AUTH", "Authentication DISABLED - granting access to ALL");
+        ESP_LOGI("OPCUA_AUTH", "=========================================");
+        *sessionContext = NULL; // Анонимная сессия
+        return UA_STATUSCODE_GOOD;
+    }
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+
+    /* Логирование - это разовое действие при подключении клиента */
+    ESP_LOGI("OPCUA_AUTH", "=========================================");
+    ESP_LOGI("OPCUA_AUTH", "Session activation attempt");
+    ESP_LOGI("OPCUA_AUTH", "System auth enabled: %s", g_config.opcua_auth_enable ? "YES" : "NO");
+    ESP_LOGI("OPCUA_AUTH", "Allow anonymous (config): %s", g_config.opcua_anonymous_enable ? "YES" : "NO");
+    ESP_LOGI("OPCUA_AUTH", "Allow anonymous (plugin): %s", context->allowAnonymous ? "YES" : "NO");
+
     /* The empty token is interpreted as anonymous */
     if(userIdentityToken->encoding == UA_EXTENSIONOBJECT_ENCODED_NOBODY) {
-        if(!context->allowAnonymous)
+        ESP_LOGI("OPCUA_AUTH", "Anonymous access attempt (empty token)");
+        if(!context->allowAnonymous) {
+            ESP_LOGW("OPCUA_AUTH", "Anonymous access DENIED - not allowed");
             return UA_STATUSCODE_BADIDENTITYTOKENINVALID;
+        }
 
         /* No userdata for anonymous */
         *sessionContext = NULL;
+        ESP_LOGI("OPCUA_AUTH", "Anonymous access GRANTED");
+        ESP_LOGI("OPCUA_AUTH", "=========================================");
         return UA_STATUSCODE_GOOD;
     }
 
     /* Could the token be decoded? */
-    if(userIdentityToken->encoding < UA_EXTENSIONOBJECT_DECODED)
+    if(userIdentityToken->encoding < UA_EXTENSIONOBJECT_DECODED) {
+        ESP_LOGW("OPCUA_AUTH", "Token decoding failed");
         return UA_STATUSCODE_BADIDENTITYTOKENINVALID;
+    }
 
     /* Anonymous login token */
     if(userIdentityToken->content.decoded.type == &UA_TYPES[UA_TYPES_ANONYMOUSIDENTITYTOKEN]) {
-        if(!context->allowAnonymous)
+        ESP_LOGI("OPCUA_AUTH", "Anonymous access attempt (explicit token)");
+        
+        /* ===== ИСПРАВЛЕНИЕ: Используем новую переменную ===== */
+        if(!context->allowAnonymous) {
+            ESP_LOGW("OPCUA_AUTH", "Anonymous access DENIED - not allowed");
             return UA_STATUSCODE_BADIDENTITYTOKENINVALID;
+        }
+        /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
 
         const UA_AnonymousIdentityToken *token = (UA_AnonymousIdentityToken*)
             userIdentityToken->content.decoded.data;
 
         /* Compatibility: empty policyId == ANONYMOUS_POLICY */
-        if(token->policyId.data && !UA_String_equal(&token->policyId, &anonymous_policy))
+        if(token->policyId.data && !UA_String_equal(&token->policyId, &anonymous_policy)) {
+            ESP_LOGW("OPCUA_AUTH", "Invalid policy ID for anonymous token");
             return UA_STATUSCODE_BADIDENTITYTOKENINVALID;
+        }
 
         /* No userdata for anonymous */
         *sessionContext = NULL;
+        ESP_LOGI("OPCUA_AUTH", "Anonymous access GRANTED");
+        ESP_LOGI("OPCUA_AUTH", "=========================================");
         return UA_STATUSCODE_GOOD;
     }
 
@@ -92,12 +126,18 @@ activateSession_custom(UA_Server *server, UA_AccessControl *ac,
         const UA_UserNameIdentityToken *userToken =
             (UA_UserNameIdentityToken*)userIdentityToken->content.decoded.data;
 
-        if(!UA_String_equal(&userToken->policyId, &username_policy))
+        ESP_LOGI("OPCUA_AUTH", "Username/password access attempt");
+
+        if(!UA_String_equal(&userToken->policyId, &username_policy)) {
+            ESP_LOGW("OPCUA_AUTH", "Invalid policy ID for username token");
             return UA_STATUSCODE_BADIDENTITYTOKENINVALID;
+        }
 
         /* Empty username and password */
-        if(userToken->userName.length == 0 && userToken->password.length == 0)
+        if(userToken->userName.length == 0 && userToken->password.length == 0) {
+            ESP_LOGW("OPCUA_AUTH", "Empty username and password");
             return UA_STATUSCODE_BADIDENTITYTOKENINVALID;
+        }
 
         /* Convert UA_String to C strings for comparison */
         char username[32] = {0};
@@ -109,57 +149,69 @@ activateSession_custom(UA_Server *server, UA_AccessControl *ac,
         if(userToken->password.length > 0 && userToken->password.length < sizeof(password))
             memcpy(password, userToken->password.data, userToken->password.length);
         
+        ESP_LOGI("OPCUA_AUTH", "User '%s' attempting login", username);
+        
         /* Check authentication using your config system */
         opcua_user_t *user = config_find_opcua_user(username);
         if(!user || !user->enabled) {
-            UA_LOG_DEBUG(UA_Log_Stdout, UA_LOGCATEGORY_SERVER,
-                        "AccessControl: User '%s' not found or disabled", username);
+            ESP_LOGW("OPCUA_AUTH", "User '%s' not found or disabled", username);
+            ESP_LOGI("OPCUA_AUTH", "=========================================");
             return UA_STATUSCODE_BADUSERACCESSDENIED;
         }
         
         if(!config_check_opcua_password(user, password)) {
-            UA_LOG_DEBUG(UA_Log_Stdout, UA_LOGCATEGORY_SERVER,
-                        "AccessControl: Invalid password for user '%s'", username);
+            ESP_LOGW("OPCUA_AUTH", "Invalid password for user '%s'", username);
+            ESP_LOGI("OPCUA_AUTH", "=========================================");
             return UA_STATUSCODE_BADUSERACCESSDENIED;
         }
         
         /* Store user rights in session context */
         uint16_t *userRights = (uint16_t*)UA_malloc(sizeof(uint16_t));
-        if(!userRights)
+        if(!userRights) {
+            ESP_LOGE("OPCUA_AUTH", "Memory allocation failed for user rights");
             return UA_STATUSCODE_BADOUTOFMEMORY;
+        }
         
         *userRights = user->rights;
         *sessionContext = userRights;
         
-        UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_SERVER,
-                   "AccessControl: User '%s' logged in successfully (rights: 0x%04X)",
-                   username, user->rights);
+        ESP_LOGI("OPCUA_AUTH", "User '%s' logged in SUCCESSFULLY (rights: 0x%04X)", 
+                 username, user->rights);
+        ESP_LOGI("OPCUA_AUTH", "=========================================");
         
         return UA_STATUSCODE_GOOD;
     }
 
     /* Unsupported token type */
+    ESP_LOGW("OPCUA_AUTH", "Unsupported token type: %p", 
+             userIdentityToken->content.decoded.type);
+    ESP_LOGI("OPCUA_AUTH", "=========================================");
     return UA_STATUSCODE_BADIDENTITYTOKENINVALID;
 }
 
 static void
 closeSession_custom(UA_Server *server, UA_AccessControl *ac,
                     const UA_NodeId *sessionId, void *sessionContext) {
-    if(sessionContext)
+    if(sessionContext) {
+        ESP_LOGI("OPCUA_AUTH", "Closing session, freeing user context");
         UA_free(sessionContext);
+    }
 }
 
 static UA_UInt32
 getUserRightsMask_custom(UA_Server *server, UA_AccessControl *ac,
                          const UA_NodeId *sessionId, void *sessionContext,
                          const UA_NodeId *nodeId, void *nodeContext) {
-    /* If auth is disabled, allow everything */
-    if(!g_config.opcua_auth_enable)
-        return 0xFFFFFFFF;
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable) {
+        return 0xFFFFFFFF; // Все права
+    }
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
     
     /* Anonymous sessions have no rights */
-    if(!sessionContext)
+    if(!sessionContext) {
         return 0;
+    }
     
     /* Map your rights to OPC UA rights mask */
     uint16_t rights = *(uint16_t*)sessionContext;
@@ -184,9 +236,10 @@ static UA_Byte
 getUserAccessLevel_custom(UA_Server *server, UA_AccessControl *ac,
                           const UA_NodeId *sessionId, void *sessionContext,
                           const UA_NodeId *nodeId, void *nodeContext) {
-    /* If auth is disabled, allow everything */
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
     if(!g_config.opcua_auth_enable)
-        return 0xFF;
+        return 0xFF; // Все уровни доступа
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
     
     /* Anonymous sessions have limited access */
     if(!sessionContext)
@@ -212,9 +265,10 @@ static UA_Boolean
 getUserExecutable_custom(UA_Server *server, UA_AccessControl *ac,
                          const UA_NodeId *sessionId, void *sessionContext,
                          const UA_NodeId *methodId, void *methodContext) {
-    /* If auth is disabled, allow everything */
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
     if(!g_config.opcua_auth_enable)
         return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
     
     /* Anonymous cannot execute methods */
     if(!sessionContext)
@@ -230,6 +284,11 @@ getUserExecutableOnObject_custom(UA_Server *server, UA_AccessControl *ac,
                                  const UA_NodeId *sessionId, void *sessionContext,
                                  const UA_NodeId *methodId, void *methodContext,
                                  const UA_NodeId *objectId, void *objectContext) {
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable)
+        return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+    
     return getUserExecutable_custom(server, ac, sessionId, sessionContext, methodId, methodContext);
 }
 
@@ -238,6 +297,11 @@ static UA_Boolean
 allowAddNode_custom(UA_Server *server, UA_AccessControl *ac,
                     const UA_NodeId *sessionId, void *sessionContext,
                     const UA_AddNodesItem *item) {
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable)
+        return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+    
     /* Only admins can add nodes */
     if(!sessionContext)
         return false;
@@ -250,6 +314,11 @@ static UA_Boolean
 allowAddReference_custom(UA_Server *server, UA_AccessControl *ac,
                          const UA_NodeId *sessionId, void *sessionContext,
                          const UA_AddReferencesItem *item) {
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable)
+        return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+    
     /* Only admins can add references */
     if(!sessionContext)
         return false;
@@ -262,6 +331,11 @@ static UA_Boolean
 allowDeleteNode_custom(UA_Server *server, UA_AccessControl *ac,
                        const UA_NodeId *sessionId, void *sessionContext,
                        const UA_DeleteNodesItem *item) {
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable)
+        return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+    
     /* Only admins can delete nodes */
     if(!sessionContext)
         return false;
@@ -274,6 +348,11 @@ static UA_Boolean
 allowDeleteReference_custom(UA_Server *server, UA_AccessControl *ac,
                             const UA_NodeId *sessionId, void *sessionContext,
                             const UA_DeleteReferencesItem *item) {
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable)
+        return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+    
     /* Only admins can delete references */
     if(!sessionContext)
         return false;
@@ -286,6 +365,11 @@ static UA_Boolean
 allowBrowseNode_custom(UA_Server *server, UA_AccessControl *ac,
                        const UA_NodeId *sessionId, void *sessionContext,
                        const UA_NodeId *nodeId, void *nodeContext) {
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable)
+        return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+    
     /* Everyone can browse (if authentication is enabled, anonymous can browse too) */
     return true;
 }
@@ -295,6 +379,11 @@ static UA_Boolean
 allowTransferSubscription_custom(UA_Server *server, UA_AccessControl *ac,
                                  const UA_NodeId *oldSessionId, void *oldSessionContext,
                                  const UA_NodeId *newSessionId, void *newSessionContext) {
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable)
+        return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+    
     /* Transfer only allowed for same user */
     if(oldSessionContext == newSessionContext)
         return true;
@@ -316,6 +405,11 @@ allowHistoryUpdateUpdateData_custom(UA_Server *server, UA_AccessControl *ac,
                                     const UA_NodeId *nodeId,
                                     UA_PerformUpdateType performInsertReplace,
                                     const UA_DataValue *value) {
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable)
+        return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+    
     /* Only admins can update history */
     if(!sessionContext)
         return false;
@@ -331,6 +425,11 @@ allowHistoryUpdateDeleteRawModified_custom(UA_Server *server, UA_AccessControl *
                                            UA_DateTime startTimestamp,
                                            UA_DateTime endTimestamp,
                                            bool isDeleteModified) {
+    /* ===== ИСПРАВЛЕНИЕ: Если аутентификация отключена, разрешаем все ===== */
+    if(!g_config.opcua_auth_enable)
+        return true;
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
+    
     /* Only admins can delete history */
     if(!sessionContext)
         return false;
@@ -360,18 +459,17 @@ static void clear_custom(UA_AccessControl *ac) {
 
 UA_AccessControl* UA_AccessControl_custom(const UA_AccessControlConfig *config) {
     (void)config;
-    
-    // Возвращаем NULL, так как твоя реализация требует UA_ServerConfig
-    // Реальная функция создается через UA_AccessControl_custom с UA_ServerConfig
     return NULL;
 }
 
-// Твоя настоящая функция с правильной сигнатурой
 UA_StatusCode UA_AccessControl_custom_init(UA_ServerConfig *config,
                         UA_Boolean allowAnonymous,
                         const UA_ByteString *userTokenPolicyUri) {
-    UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_SERVER,
-               "AccessControl: Initializing custom access control");
+    ESP_LOGI("OPCUA_AUTH", "=========================================");
+    ESP_LOGI("OPCUA_AUTH", "Initializing custom access control plugin");
+    ESP_LOGI("OPCUA_AUTH", "System auth enabled: %s", g_config.opcua_auth_enable ? "YES" : "NO");
+    ESP_LOGI("OPCUA_AUTH", "System anonymous enabled: %s", g_config.opcua_anonymous_enable ? "YES" : "NO");
+    ESP_LOGI("OPCUA_AUTH", "Requested anonymous: %s", allowAnonymous ? "YES" : "NO");
     
     UA_AccessControl *ac = &config->accessControl;
     ac->clear = clear_custom;
@@ -399,18 +497,26 @@ UA_StatusCode UA_AccessControl_custom_init(UA_ServerConfig *config,
 
     AccessControlContext *context = (AccessControlContext*)
             UA_malloc(sizeof(AccessControlContext));
-    if(!context)
+    if(!context) {
+        ESP_LOGE("OPCUA_AUTH", "Failed to allocate context memory");
         return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
     
     memset(context, 0, sizeof(AccessControlContext));
     ac->context = context;
 
-    /* Allow anonymous? Use config setting */
-    context->allowAnonymous = (allowAnonymous && g_config.opcua_auth_enable);
-    if(context->allowAnonymous) {
-        UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_SERVER,
-                   "AccessControl: Anonymous login is enabled");
+    /* ===== ИСПРАВЛЕНИЕ: Новая логика для анонимного доступа ===== */
+    if (!g_config.opcua_auth_enable) {
+        // Если авторизация отключена, всегда разрешаем анонимный доступ
+        context->allowAnonymous = true;
+        ESP_LOGI("OPCUA_AUTH", "Auth disabled -> Anonymous access ENABLED (always)");
+    } else {
+        // Если авторизация включена, используем настройку anonymous_enable
+        context->allowAnonymous = g_config.opcua_anonymous_enable;
+        ESP_LOGI("OPCUA_AUTH", "Auth enabled -> Anonymous access: %s", 
+                 context->allowAnonymous ? "ENABLED" : "DISABLED");
     }
+    /* ===== КОНЕЦ ИСПРАВЛЕНИЯ ===== */
 
     /* Set the allowed policies */
     size_t policies = 0;
@@ -424,8 +530,10 @@ UA_StatusCode UA_AccessControl_custom_init(UA_ServerConfig *config,
     ac->userTokenPoliciesSize = 0;
     ac->userTokenPolicies = (UA_UserTokenPolicy *)
         UA_Array_new(policies, &UA_TYPES[UA_TYPES_USERTOKENPOLICY]);
-    if(!ac->userTokenPolicies)
+    if(!ac->userTokenPolicies) {
+        ESP_LOGE("OPCUA_AUTH", "Failed to allocate policies array");
         return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
     
     ac->userTokenPoliciesSize = policies;
 
@@ -433,16 +541,20 @@ UA_StatusCode UA_AccessControl_custom_init(UA_ServerConfig *config,
     if(context->allowAnonymous) {
         ac->userTokenPolicies[policies].tokenType = UA_USERTOKENTYPE_ANONYMOUS;
         ac->userTokenPolicies[policies].policyId = UA_STRING_ALLOC(ANONYMOUS_POLICY);
-        if (!ac->userTokenPolicies[policies].policyId.data)
+        if (!ac->userTokenPolicies[policies].policyId.data) {
+            ESP_LOGE("OPCUA_AUTH", "Failed to allocate anonymous policy string");
             return UA_STATUSCODE_BADOUTOFMEMORY;
+        }
         policies++;
     }
 
     if(g_config.opcua_auth_enable) {
         ac->userTokenPolicies[policies].tokenType = UA_USERTOKENTYPE_USERNAME;
         ac->userTokenPolicies[policies].policyId = UA_STRING_ALLOC(USERNAME_POLICY);
-        if(!ac->userTokenPolicies[policies].policyId.data)
+        if(!ac->userTokenPolicies[policies].policyId.data) {
+            ESP_LOGE("OPCUA_AUTH", "Failed to allocate username policy string");
             return UA_STATUSCODE_BADOUTOFMEMORY;
+        }
 
         /* Check security policy warning */
 #if UA_LOGLEVEL <= 400
@@ -453,9 +565,18 @@ UA_StatusCode UA_AccessControl_custom_init(UA_ServerConfig *config,
                           "This can leak credentials on the network.");
         }
 #endif
-        return UA_ByteString_copy(userTokenPolicyUri,
+        
+        UA_StatusCode copy_status = UA_ByteString_copy(userTokenPolicyUri,
                                   &ac->userTokenPolicies[policies].securityPolicyUri);
+        if(copy_status != UA_STATUSCODE_GOOD) {
+            ESP_LOGE("OPCUA_AUTH", "Failed to copy security policy URI");
+            return copy_status;
+        }
     }
+    
+    ESP_LOGI("OPCUA_AUTH", "Custom access control plugin initialized successfully");
+    ESP_LOGI("OPCUA_AUTH", "Total token policies: %zu", ac->userTokenPoliciesSize);
+    ESP_LOGI("OPCUA_AUTH", "=========================================");
     
     return UA_STATUSCODE_GOOD;
 }

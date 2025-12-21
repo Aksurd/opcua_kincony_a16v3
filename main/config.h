@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/* ==================== OPC UA Аутентификация и права (НОВОЕ) ==================== */
+/* ==================== OPC UA Аутентификация и права ==================== */
 
 typedef enum {
     OPCUA_RIGHT_NONE      = 0x0000,
@@ -37,7 +37,7 @@ typedef struct {
     bool enabled;
 } opcua_user_t;
 
-/* ==================== Существующие типы (БЕЗ ИЗМЕНЕНИЙ) ==================== */
+/* ==================== Существующие типы ==================== */
 
 typedef enum {
     NET_DHCP = 0,
@@ -98,7 +98,7 @@ typedef struct {
 /* ==================== Глобальная конфигурация ==================== */
 
 typedef struct {
-    // Существующие поля (БЕЗ ИЗМЕНЕНИЙ в порядке)
+    // Существующие поля
     app_wifi_config_t wifi;
     eth_config_t eth;
     time_config_t time;
@@ -107,15 +107,16 @@ typedef struct {
     bool init_complete;
     bool config_changed;
     
-    // НОВЫЕ поля для OPC UA (добавлены в конец)
-    bool opcua_auth_enable;
+    // НОВЫЕ поля для OPC UA
+    bool opcua_auth_enable;          // Включена ли авторизация
+    bool opcua_anonymous_enable;     // Разрешен ли анонимный доступ при включенной авторизации
     opcua_user_t opcua_users[10];
     uint8_t opcua_user_count;
 } system_config_t;
 
 extern system_config_t g_config;
 
-/* ==================== Существующие функции (БЕЗ ИЗМЕНЕНИЙ) ==================== */
+/* ==================== Существующие функции ==================== */
 
 void config_init_defaults(void);
 void config_wifi_set_static_ip(const char *ip, const char *netmask, const char *gateway);
@@ -134,6 +135,8 @@ bool config_check_opcua_password(opcua_user_t *user, const char *password);
 bool config_check_opcua_rights(opcua_user_t *user, uint16_t required_rights);
 bool config_is_opcua_auth_enabled(void);
 void config_set_opcua_auth_enabled(bool enabled);
+bool config_is_opcua_anonymous_enabled(void);
+void config_set_opcua_anonymous_enabled(bool enabled);
 
 #ifdef __cplusplus
 }

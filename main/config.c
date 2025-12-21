@@ -5,14 +5,14 @@
 
 static const char *TAG = "config";
 
-// Глобальная конфигурация системы (СУЩЕСТВУЮЩАЯ без изменений)
+// Глобальная конфигурация системы
 system_config_t g_config = {
     .init_complete = false,
     .config_changed = false,
     .ip_forwarding = true,
     .prefer_wifi = true,
     
-    // Wi-Fi конфигурация (как было)
+    // Wi-Fi конфигурация
     .wifi = {
         .enable = true,
         .ssid = "Mz6",
@@ -23,7 +23,7 @@ system_config_t g_config = {
         .channel = 0, // авто
         .priority = 200,
         .ip_config = {
-            .mode = NET_DHCP,  // ОСТАВЛЕНО как было (DHCP)
+            .mode = NET_DHCP,
             .ip_info = {
                 .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 129) },
                 .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },
@@ -35,7 +35,7 @@ system_config_t g_config = {
         }
     },
     
-    // Ethernet конфигурация (как было)
+    // Ethernet конфигурация
     .eth = {
         .enable = false,
         .mosi_pin = 43,
@@ -50,7 +50,7 @@ system_config_t g_config = {
         .speed = ETH_SPEED_100M,
         .priority = 100,
         .ip_config = {
-            .mode = NET_DHCP,  // ОСТАВЛЕНО как было (DHCP)
+            .mode = NET_DHCP,
             .ip_info = {
                 .ip = { .addr = ESP_IP4TOADDR(10, 0, 0, 128) },
                 .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },
@@ -62,7 +62,7 @@ system_config_t g_config = {
         }
     },
     
-    // Конфигурация времени (как было)
+    // Конфигурация времени
     .time = {
         .mode = TIME_SYNC_SNTP,
         .ntp_server1 = "pool.ntp.org",
@@ -73,17 +73,17 @@ system_config_t g_config = {
         .sync_on_ip_obtained = true
     },
     
-    // НОВЫЕ поля OPC UA (инициализированы в config_init_defaults)
-    .opcua_auth_enable = false,
-    .opcua_user_count = 0  // Будет установлено в config_init_defaults
+    // НОВЫЕ поля OPC UA
+    .opcua_auth_enable = true,           // Авторизация включена по умолчанию
+    .opcua_anonymous_enable = false,      // Анонимный доступ разрешен по умолчанию
+    .opcua_user_count = 0                // Будет установлено в config_init_defaults
 };
 
-/* ==================== Существующие функции (БЕЗ ИЗМЕНЕНИЙ) ==================== */
+/* ==================== Существующие функции ==================== */
 
 void config_init_defaults(void)
 {
     // Инициализация новых полей OPC UA
-    g_config.opcua_auth_enable = true; // Авторизация включена
     g_config.opcua_user_count = 3;
     
     // Пользователь 0: operator (только чтение и просмотр)
@@ -114,7 +114,9 @@ void config_init_defaults(void)
     
     g_config.init_complete = true;
     ESP_LOGI(TAG, "System configuration initialized with defaults");
-    ESP_LOGI(TAG, "OPC UA users: operator, engineer, admin (auth disabled by default)");
+    ESP_LOGI(TAG, "OPC UA users: operator, engineer, admin");
+    ESP_LOGI(TAG, "OPC UA auth: %s", g_config.opcua_auth_enable ? "enabled" : "disabled");
+    ESP_LOGI(TAG, "OPC UA anonymous: %s", g_config.opcua_anonymous_enable ? "enabled" : "disabled");
 }
 
 void config_wifi_set_static_ip(const char *ip, const char *netmask, const char *gateway)
@@ -194,9 +196,7 @@ void config_set_ntp_servers(const char *server1, const char *server2, const char
     
     g_config.config_changed = true;
     ESP_LOGI(TAG, "NTP servers set: %s, %s, %s", 
-             server1, 
-             server2 ? server2 : "none", 
-             server3 ? server3 : "none");
+             server1, server2 ? server2 : "none", server3 ? server3 : "none");
 }
 
 uint32_t config_ip_to_int(const char *ip_str)
@@ -263,4 +263,18 @@ void config_set_opcua_auth_enabled(bool enabled) {
     g_config.opcua_auth_enable = enabled;
     g_config.config_changed = true;
     ESP_LOGI(TAG, "OPC UA authentication %s", enabled ? "enabled" : "disabled");
+}
+
+bool config_is_opcua_anonymous_enabled(void) {
+    // Если аутентификация отключена, анонимный доступ всегда разрешен
+    if (!g_config.opcua_auth_enable) {
+        return true;
+    }
+    return g_config.opcua_anonymous_enable;
+}
+
+void config_set_opcua_anonymous_enabled(bool enabled) {
+    g_config.opcua_anonymous_enable = enabled;
+    g_config.config_changed = true;
+    ESP_LOGI(TAG, "OPC UA anonymous access %s", enabled ? "enabled" : "disabled");
 }
